@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>目标 - Rhythm & Routine</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div><h1 class="brand-title">Rhythm & Routine</h1><p class="brand-subtitle">AI Native 目标推进系统</p></div>
+      <nav class="nav">
+        <a href="schedule.html"><span class="keycap">S</span><span>日程</span></a>
+        <a class="active" href="goals.html"><span class="keycap">G</span><span>目标</span></a>
+        <a href="review.html"><span class="keycap">R</span><span>回顾</span></a>
+      </nav>
+      <div class="sidebar-note"><strong>目标页负责</strong><div class="muted">目标列表、状态、投入时间摘要、待确认事项。</div></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div><h2 class="page-title">目标</h2><p class="page-caption">目标列表、状态和本周投入时间摘要</p></div>
+        <div class="top-actions"><button class="text-button primary" type="button">新建目标</button></div>
+      </header>
+
+      <div class="content">
+        <section class="section">
+          <div class="section-header">
+            <div><h2>目标总览</h2><div class="muted">这里不自动判断目标达成率，只呈现执行历程和用户待确认事项。</div></div>
+          </div>
+          <div class="list">
+            <a class="list-item" href="goal-detail.html">
+              <div class="list-item-title"><span>健身目标</span><span class="pill green">推进中</span></div>
+              <div class="muted">9 月 15 日前，体型线条更明显，并提升训练计划设计能力。</div>
+              <div class="pill-row"><span class="pill">本周安排 5.0h</span><span class="pill">完成 2.5h</span><span class="pill gold">1 个日程待反馈</span><span class="pill">Routine 2/3</span></div>
+            </a>
+            <a class="list-item" href="goal-detail.html">
+              <div class="list-item-title"><span>通过 Vibe Coding 成为 AI Agent 开发工程师</span><span class="pill gold">待回顾确认</span></div>
+              <div class="muted">训练小律编排、评估调优、初级全栈开发和部署可用应用。</div>
+              <div class="pill-row"><span class="pill">本周投入 8.5h</span><span class="pill">完成 4 个任务</span><span class="pill gold">里程碑待确认</span><span class="pill blue">上午深度任务顺畅</span></div>
+            </a>
+            <button class="list-item" type="button">
+              <div class="list-item-title"><span>英语口语表达</span><span class="pill">未开始</span></div>
+              <div class="muted">尚未完成目标澄清。小律需要先追问使用场景、频率和验收方式。</div>
+              <div class="pill-row"><span class="pill">待澄清</span><span class="pill">未生成任务</span></div>
+            </button>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <button class="agent-fab" type="button" id="agentFab" title="打开小律">律</button>
+  <section class="agent-panel" id="agentPanel" aria-label="小律">
+    <div class="agent-head"><div><strong>小律</strong><div class="muted">同一条对话流，按需清空上下文</div></div><div class="agent-actions"><button class="icon-button" type="button" id="clearContext" title="清空上下文">↺</button><button class="icon-button" type="button" id="toggleAgentFullscreen" title="全屏">□</button><button class="icon-button" type="button" id="closeAgent" title="收起">X</button></div></div>
+    <div class="agent-skills"><div class="skill-list"><button class="skill-button" type="button"><span>+</span><span>澄清目标</span></button><button class="skill-button" type="button"><span>▦</span><span>拆解任务</span></button><button class="skill-button" type="button"><span>↻</span><span>调整计划</span></button></div></div>
+    <div class="agent-body"><div class="message">选择一个目标后，我可以继续追问信息、拆解任务或整理待确认事项。</div></div>
+    <div class="agent-input"><button class="icon-button" type="button" id="toggleSkillMenu" title="选择意图">+</button><input aria-label="输入给小律的消息" placeholder="输入请求..." /><button class="text-button primary" type="button">发送</button></div>
+  </section>
+  <script src="app.js"></script>
+</body>
+</html>

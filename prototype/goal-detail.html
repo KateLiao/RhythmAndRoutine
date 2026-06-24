@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>目标详情 - Rhythm & Routine</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div><h1 class="brand-title">Rhythm & Routine</h1><p class="brand-subtitle">AI Native 目标推进系统</p></div>
+      <nav class="nav">
+        <a href="schedule.html"><span class="keycap">S</span><span>日程</span></a>
+        <a class="active" href="goals.html"><span class="keycap">G</span><span>目标</span></a>
+        <a href="review.html"><span class="keycap">R</span><span>回顾</span></a>
+      </nav>
+      <div class="sidebar-note"><strong>目标详情负责</strong><div class="muted">目标、结果指标、项目、里程碑、能力、Routine、任务、关联日程。</div></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <a class="text-button subtle" href="goals.html">返回目标列表</a>
+          <h2 class="page-title">通过 Vibe Coding 成为 AI Agent 开发工程师</h2>
+          <p class="page-caption">2-3 周 MVP 验证：能创建目标、安排日程、跟踪执行，并让小律动态调整后续任务。</p>
+        </div>
+        <div class="top-actions"><button class="text-button" type="button">编辑目标</button><button class="text-button primary" type="button">请小律规划任务</button></div>
+      </header>
+
+      <div class="content">
+        <div class="page-grid">
+          <div class="page-stack">
+            <section class="section">
+              <div class="section-header"><h2>目标结构</h2><span class="pill green">推进中</span></div>
+              <div class="entity-grid">
+                <div class="list-item">
+                  <div class="list-item-title"><span>结果指标</span><span class="pill gold">用户确认</span></div>
+                  <div class="muted">完成一个可用的 AI Native 个人目标推进产品 MVP，并能够解释核心技术链路。</div>
+                </div>
+                <div class="list-item">
+                  <div class="list-item-title"><span>项目</span><span>Rhythm & Routine MVP</span></div>
+                  <div class="muted">从原型到前后端、数据结构、小律能力和部署可用应用。</div>
+                </div>
+                <div class="list-item">
+                  <div class="list-item-title"><span>里程碑</span><span class="pill gold">待回顾确认</span></div>
+                  <div class="muted">MVP 主流程和关键实体清晰，并完成可运行原型。</div>
+                </div>
+                <div class="list-item">
+                  <div class="list-item-title"><span>能力</span><span>AI Agent 开发</span></div>
+                  <div class="muted">训练编排、评估调优、全栈实现、部署和调试能力。</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-header">
+                <div><h2>关联任务</h2><div class="muted">任务展示意图、完成标准、预计耗时、节奏匹配和安排状态。</div></div>
+                <button class="text-button" type="button">新建任务</button>
+              </div>
+              <div class="list">
+                <a class="list-item" href="task-detail.html">
+                  <div class="list-item-title"><span>设计日程块数据结构</span><span class="pill green">已安排</span></div>
+                  <div class="muted">意图：让系统表达灵活日程块，并支持后续小律动态调整与用户确认。</div>
+                  <div class="pill-row"><span class="pill">预计 90m</span><span class="pill blue">高专注</span><span class="pill">上午优先</span><span class="pill">完成标准：写入 PRD</span></div>
+                </a>
+                <a class="list-item" href="task-detail.html">
+                  <div class="list-item-title"><span>实现小律全局浮窗</span><span class="pill">未安排</span></div>
+                  <div class="muted">意图：让用户在任意页面唤起小律，并带着当前页面上下文沟通。</div>
+                  <div class="pill-row"><span class="pill">预计 120m</span><span class="pill blue">高专注</span><span class="pill">适合上午</span><span class="pill gold">可拆分</span></div>
+                </a>
+                <a class="list-item" href="task-detail.html">
+                  <div class="list-item-title"><span>部署第一个可用版本</span><span class="pill">未安排</span></div>
+                  <div class="muted">意图：把项目从本地 demo 推到真实可访问环境。</div>
+                  <div class="pill-row"><span class="pill">预计 90m</span><span class="pill">中专注</span><span class="pill">完成标准：可打开并完成主流程</span></div>
+                </a>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-header"><div><h2>时间投入与日程块</h2><div class="muted">投入统计和具体日程放在一起，方便看见时间如何进入目标。</div></div><a class="text-button" href="schedule.html">查看日程</a></div>
+              <div class="time-bars">
+                <div class="bar-row"><span>周一</span><div class="bar-track"><div class="bar-fill" style="width:70%"></div></div><span>2.0h</span></div>
+                <div class="bar-row"><span>周二</span><div class="bar-track"><div class="bar-fill" style="width:40%"></div></div><span>1.0h</span></div>
+                <div class="bar-row"><span>周三</span><div class="bar-track"><div class="bar-fill" style="width:82%"></div></div><span>2.5h</span></div>
+                <div class="bar-row"><span>周四</span><div class="bar-track"><div class="bar-fill" style="width:60%"></div></div><span>1.5h</span></div>
+                <div class="bar-row"><span>周五</span><div class="bar-track"><div class="bar-fill" style="width:50%"></div></div><span>1.5h</span></div>
+              </div>
+              <div class="list" style="margin-top:16px">
+                <div class="list-item"><div class="list-item-title"><span>今天 10:00-11:30 · 设计日程块数据结构</span><span class="pill green">已完成</span></div><div class="muted">节奏反馈：顺畅；上午高专注任务推进顺利。</div></div>
+                <div class="list-item"><div class="list-item-title"><span>周五 20:00-21:00 · 自由编码</span><span class="pill">已安排</span></div><div class="muted">节奏匹配：晚间更适合低阻力实现或整理。</div></div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="side-stack">
+            <section class="section">
+              <div class="section-header"><h3>本周摘要</h3></div>
+              <div class="metrics">
+                <div class="metric"><div class="metric-value">8.5h</div><div class="muted">已投入</div></div>
+                <div class="metric"><div class="metric-value">4</div><div class="muted">完成任务</div></div>
+                <div class="metric"><div class="metric-value">1</div><div class="muted">待确认</div></div>
+              </div>
+            </section>
+            <section class="section">
+              <div class="section-header"><h3>小律建议</h3></div>
+              <div class="list">
+                <div class="list-item"><div class="list-item-title"><span>先冻结实体闭环</span><span class="pill blue">判断</span></div><div class="muted">页面结构已接近稳定，下一步适合确定数据模型和能力边界。</div></div>
+                <div class="list-item"><div class="list-item-title"><span>周回顾时确认里程碑</span><span class="pill gold">需你确认</span></div><div class="muted">我只能建议检查，不能直接把里程碑标成完成。</div></div>
+              </div>
+            </section>
+            <section class="section">
+              <div class="section-header"><h3>回顾历史</h3><a class="text-button" href="review.html">查看</a></div>
+              <div class="list"><div class="list-item"><div class="list-item-title"><span>周中回顾</span><span class="pill">已完成</span></div><div class="muted">上午深度任务更顺畅，晚间适合整理。</div></div></div>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+  <button class="agent-fab" type="button" id="agentFab" title="打开小律">律</button>
+  <section class="agent-panel" id="agentPanel" aria-label="小律">
+    <div class="agent-head"><div><strong>小律</strong><div class="muted">同一条对话流，按需清空上下文</div></div><div class="agent-actions"><button class="icon-button" type="button" id="clearContext" title="清空上下文">↺</button><button class="icon-button" type="button" id="toggleAgentFullscreen" title="全屏">□</button><button class="icon-button" type="button" id="closeAgent" title="收起">X</button></div></div>
+    <div class="agent-skills"><div class="skill-list"><button class="skill-button" type="button"><span>▦</span><span>拆解任务</span></button><button class="skill-button" type="button"><span>↻</span><span>调整计划</span></button><button class="skill-button" type="button"><span>✓</span><span>检查里程碑</span></button></div></div>
+    <div class="agent-body"><div class="message">我正在读取这个目标的任务、日程、执行记录和回顾。你可以让我解释当前计划或调整本周安排。</div></div>
+    <div class="agent-input"><button class="icon-button" type="button" id="toggleSkillMenu" title="选择意图">+</button><input aria-label="输入给小律的消息" placeholder="输入请求..." /><button class="text-button primary" type="button">发送</button></div>
+  </section>
+  <script src="app.js"></script>
+</body>
+</html>

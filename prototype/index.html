@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rhythm & Routine 原型</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div>
+        <h1 class="brand-title">Rhythm & Routine</h1>
+        <p class="brand-subtitle">AI Native 目标推进系统</p>
+      </div>
+      <nav class="nav">
+        <a href="schedule.html"><span class="keycap">S</span><span>日程</span></a>
+        <a href="goals.html"><span class="keycap">G</span><span>目标</span></a>
+        <a href="review.html"><span class="keycap">R</span><span>回顾</span></a>
+      </nav>
+      <div class="sidebar-note">
+        <strong>MVP 闭环</strong>
+        <div class="muted">创建目标、拆解任务、安排日程、记录执行、反馈节奏、回顾确认、再调整。</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h2 class="page-title">原型入口</h2>
+          <p class="page-caption">按页面查看 MVP 主流程与实体闭环</p>
+        </div>
+        <div class="top-actions">
+          <a class="text-button primary" href="schedule.html">进入日程</a>
+        </div>
+      </header>
+
+      <div class="content narrow">
+        <section class="section">
+          <div class="section-header">
+            <div>
+              <h2>主流程</h2>
+              <div class="muted">从目标输入到日程执行，再通过回顾完成用户确认与计划调整。</div>
+            </div>
+          </div>
+          <div class="list">
+            <a class="list-item" href="goals.html">
+              <div class="list-item-title"><span>1. 目标</span><span class="pill green">目标 / 结果指标</span></div>
+              <div class="muted">填写目标，小律追问信息，生成结果指标、项目、里程碑、Routine 和任务。</div>
+            </a>
+            <a class="list-item" href="schedule.html">
+              <div class="list-item-title"><span>2. 日程</span><span class="pill blue">日程块</span></div>
+              <div class="muted">把任务落到具体时间块，执行后记录结果与节奏反馈。</div>
+            </a>
+            <a class="list-item" href="review.html">
+              <div class="list-item-title"><span>3. 回顾</span><span class="pill gold">回顾 / 用户确认</span></div>
+              <div class="muted">系统呈现执行历程和节奏信号，由用户确认里程碑、结果指标和调整方案。</div>
+            </a>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <button class="agent-fab" type="button" id="agentFab" title="打开小律">律</button>
+  <section class="agent-panel" id="agentPanel" aria-label="小律">
+    <div class="agent-head">
+      <div><strong>小律</strong><div class="muted">同一条对话流，按需清空上下文</div></div>
+      <div class="agent-actions">
+        <button class="icon-button" type="button" id="clearContext" title="清空上下文">↺</button>
+        <button class="icon-button" type="button" id="toggleAgentFullscreen" title="全屏">□</button>
+        <button class="icon-button" type="button" id="closeAgent" title="收起">X</button>
+      </div>
+    </div>
+    <div class="agent-skills">
+      <div class="skill-list">
+        <button class="skill-button" type="button"><span>↻</span><span>调整日程</span></button>
+        <button class="skill-button" type="button"><span>▦</span><span>拆分任务</span></button>
+        <button class="skill-button" type="button"><span>✓</span><span>生成回顾</span></button>
+        <button class="skill-button" type="button"><span>?</span><span>解释计划</span></button>
+      </div>
+    </div>
+    <div class="agent-body">
+      <div class="message">我可以读取当前页面上下文，帮助你安排、解释和回顾。</div>
+    </div>
+    <div class="agent-input">
+      <button class="icon-button" type="button" id="toggleSkillMenu" title="选择意图">+</button>
+      <input aria-label="输入给小律的消息" placeholder="输入请求..." />
+      <button class="text-button primary" type="button">发送</button>
+    </div>
+  </section>
+  <script src="app.js"></script>
+</body>
+</html>

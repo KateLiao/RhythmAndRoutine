@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rhythm & Routine · UI 风格试衣间</title>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: #e9e9e5;
+      color: #171917;
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    button { font: inherit; }
+    .intro {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 64px 32px 32px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 460px);
+      gap: 48px;
+      align-items: end;
+    }
+    .eyebrow { margin: 0 0 16px; font-size: 12px; font-weight: 800; letter-spacing: .16em; }
+    .intro h1 { max-width: 760px; margin: 0; font-size: clamp(42px, 6vw, 86px); line-height: .95; letter-spacing: -.065em; }
+    .intro p { margin: 0; color: #5f645f; font-size: 16px; line-height: 1.8; }
+    .gallery {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 32px 32px 96px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 32px;
+    }
+    .option { min-width: 0; }
+    .option-head {
+      min-height: 86px;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: start;
+      padding: 0 4px 16px;
+    }
+    .option-head h2 { margin: 0 0 8px; font-size: 22px; letter-spacing: -.025em; }
+    .option-head p { margin: 0; color: #666b66; font-size: 13px; line-height: 1.6; }
+    .number { color: #777c77; font: 500 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .sample {
+      position: relative;
+      min-height: 620px;
+      overflow: hidden;
+      isolation: isolate;
+    }
+    .sample button { cursor: pointer; }
+    .mini-nav { display: flex; align-items: center; justify-content: space-between; }
+    .mini-brand { font-weight: 800; }
+    .task-title { margin: 0; }
+    .meta { opacity: .64; }
+    .progress-row { display: flex; justify-content: space-between; gap: 20px; }
+
+    /* 01 Calm Swiss */
+    .swiss {
+      padding: 28px;
+      background-color: #f4f5ef;
+      background-image: linear-gradient(rgba(44, 82, 58, .06) 1px, transparent 1px);
+      background-size: 100% 8px;
+      border: 1px solid #bdc7bd;
+      color: #19211b;
+    }
+    .swiss .mini-nav { padding-bottom: 22px; border-bottom: 1px solid #aeb9af; }
+    .swiss .mini-brand { font-size: 16px; letter-spacing: -.03em; }
+    .swiss .mini-nav span { color: #315f43; font: 700 10px/1 ui-monospace, monospace; letter-spacing: .12em; }
+    .swiss-main { display: grid; grid-template-columns: 96px 1fr; min-height: 500px; }
+    .swiss-date { padding: 32px 16px 0 0; border-right: 1px solid #aeb9af; }
+    .swiss-date strong { display: block; font-size: 54px; font-weight: 350; line-height: 1; letter-spacing: -.08em; }
+    .swiss-date small { display: block; margin-top: 10px; color: #315f43; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+    .swiss-content { padding: 34px 0 0 28px; }
+    .swiss .meta { font-size: 12px; letter-spacing: .08em; }
+    .swiss .task-title { margin-top: 18px; font-size: 36px; line-height: 1.08; font-weight: 480; letter-spacing: -.05em; }
+    .swiss-line { height: 1px; margin: 36px 0 24px; background: #aeb9af; }
+    .swiss .progress-row { color: #315f43; font-size: 12px; font-weight: 700; }
+    .swiss-track { height: 12px; margin-top: 12px; border: 1px solid #315f43; }
+    .swiss-track i { display: block; width: 68%; height: 100%; background: #315f43; }
+    .swiss button { position: absolute; right: 28px; bottom: 28px; border: 0; border-radius: 0; background: #315f43; color: white; padding: 14px 20px; font-weight: 750; }
+
+    /* 02 Soft Humanist */
+    .soft {
+      padding: 24px;
+      border-radius: 32px;
+      background: #f4f0ff;
+      color: #302947;
+      box-shadow: inset 0 0 0 1px rgba(67, 50, 102, .08);
+    }
+    .soft::before, .soft::after { content: ""; position: absolute; z-index: -1; border-radius: 50%; filter: blur(2px); }
+    .soft::before { width: 340px; height: 340px; right: -120px; top: -130px; background: #d9f2d8; }
+    .soft::after { width: 280px; height: 280px; left: -120px; bottom: -120px; background: #ffd9ce; }
+    .soft .mini-nav { padding: 8px 6px 24px; }
+    .soft .mini-brand { font-size: 17px; }
+    .soft .mini-nav span { padding: 8px 12px; border-radius: 999px; background: rgba(255,255,255,.58); font-size: 11px; }
+    .soft-card { margin-top: 10px; padding: 32px; border: 1px solid rgba(71, 53, 103, .1); border-radius: 26px; background: rgba(255,255,255,.72); box-shadow: 0 24px 50px rgba(73, 56, 101, .12); backdrop-filter: blur(18px); }
+    .soft-card .meta { color: #685b83; font-size: 13px; }
+    .soft .task-title { margin-top: 16px; font-size: 35px; line-height: 1.12; letter-spacing: -.04em; }
+    .soft-tags { display: flex; gap: 8px; margin-top: 24px; flex-wrap: wrap; }
+    .soft-tags span { padding: 8px 12px; border-radius: 999px; background: #eee6ff; color: #68558e; font-size: 11px; font-weight: 700; }
+    .soft-rhythm { margin-top: 24px; padding: 18px; border-radius: 18px; background: #eff8ec; }
+    .soft-rhythm .progress-row { font-size: 12px; font-weight: 700; }
+    .soft-track { height: 8px; margin-top: 12px; border-radius: 999px; background: #d5e5d1; overflow: hidden; }
+    .soft-track i { display: block; width: 68%; height: 100%; border-radius: inherit; background: #5b9164; }
+    .soft button { width: 100%; margin-top: 20px; border: 0; border-radius: 16px; background: #6b57a2; color: white; padding: 15px; font-weight: 750; box-shadow: 0 10px 22px rgba(107, 87, 162, .22); }
+
+    /* 03 Editorial Ritual */
+    .editorial {
+      padding: 32px;
+      border: 1px solid #c3b6a2;
+      background: #f2eadc;
+      color: #30281f;
+      font-family: Georgia, "Songti SC", serif;
+    }
+    .editorial::after { content: "R"; position: absolute; right: -16px; bottom: -68px; z-index: -1; color: rgba(112, 38, 31, .08); font-size: 380px; line-height: 1; }
+    .editorial .mini-nav { padding-bottom: 18px; border-bottom: 3px double #695d4f; }
+    .editorial .mini-brand { font-size: 20px; font-style: italic; }
+    .editorial .mini-nav span { color: #792f29; font: 700 10px/1 ui-monospace, monospace; letter-spacing: .12em; }
+    .editorial-kicker { margin-top: 34px; color: #792f29; font: 700 11px/1.4 ui-monospace, monospace; letter-spacing: .14em; text-transform: uppercase; }
+    .editorial .task-title { max-width: 520px; margin-top: 18px; font-size: 46px; line-height: 1.03; font-weight: 500; letter-spacing: -.045em; }
+    .editorial-copy { max-width: 440px; margin: 26px 0 0; color: #665a4d; font-size: 15px; line-height: 1.85; }
+    .editorial-note { margin-top: 42px; padding: 18px 0; border-top: 1px solid #9f907d; border-bottom: 1px solid #9f907d; display: grid; grid-template-columns: 70px 1fr; gap: 20px; }
+    .editorial-note strong { color: #792f29; font-size: 34px; font-weight: 500; }
+    .editorial-note span { font-size: 13px; line-height: 1.7; }
+    .editorial button { position: absolute; left: 32px; bottom: 32px; border: 0; border-bottom: 1px solid #792f29; background: transparent; color: #792f29; padding: 8px 0; font-family: inherit; font-weight: 700; }
+
+    /* 04 Night Focus */
+    .night {
+      padding: 26px;
+      border: 1px solid #293146;
+      border-radius: 12px;
+      background: radial-gradient(circle at 82% 18%, rgba(107, 255, 184, .11), transparent 34%), #0b0f19;
+      color: #f2f5f7;
+      box-shadow: 0 26px 70px rgba(7, 10, 18, .36);
+    }
+    .night .mini-nav { padding: 6px 4px 26px; }
+    .night .mini-brand { font: 700 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -.04em; }
+    .night .mini-nav span { color: #6bffb8; font: 600 10px/1 ui-monospace, monospace; letter-spacing: .1em; }
+    .focus-ring { position: relative; width: 216px; height: 216px; margin: 34px auto; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(#6bffb8 0 68%, #1a2232 68% 100%); box-shadow: 0 0 54px rgba(107,255,184,.1); }
+    .focus-ring::before { content: ""; position: absolute; inset: 9px; border-radius: inherit; background: #0b0f19; }
+    .focus-ring span { position: relative; text-align: center; font: 500 40px/1 ui-monospace, monospace; }
+    .focus-ring small { display: block; margin-top: 8px; color: #8d98aa; font-size: 10px; letter-spacing: .14em; }
+    .night-task { padding: 20px; border: 1px solid #293146; border-radius: 8px; background: rgba(18, 24, 38, .78); }
+    .night .meta { color: #6bffb8; font: 600 10px/1.4 ui-monospace, monospace; letter-spacing: .1em; }
+    .night .task-title { margin-top: 12px; font-size: 25px; line-height: 1.2; letter-spacing: -.035em; }
+    .night button { width: 100%; margin-top: 14px; border: 1px solid #6bffb8; border-radius: 6px; background: transparent; color: #6bffb8; padding: 14px; font-weight: 750; }
+
+    @media (max-width: 920px) {
+      .intro, .gallery { grid-template-columns: 1fr; }
+      .intro { gap: 24px; }
+      .sample { min-height: 580px; }
+    }
+    @media (max-width: 560px) {
+      .intro { padding: 42px 18px 20px; }
+      .gallery { padding: 20px 14px 64px; gap: 42px; }
+      .option-head { min-height: auto; }
+      .sample { min-height: 560px; }
+      .swiss, .editorial { padding: 22px; }
+      .swiss-main { grid-template-columns: 70px 1fr; }
+      .swiss-content { padding-left: 18px; }
+      .swiss-date strong { font-size: 44px; }
+      .swiss .task-title, .soft .task-title { font-size: 30px; }
+      .editorial .task-title { font-size: 38px; }
+      .soft-card { padding: 24px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <header class="intro">
+    <div>
+      <p class="eyebrow">RHYTHM & ROUTINE / STYLE STUDIES</p>
+      <h1>四种视觉性格</h1>
+    </div>
+    <p>同一个今日任务，用四种视觉语言表达。这里不比较功能，只比较你希望每天打开产品时，它带给你的感受。</p>
+  </header>
+
+  <main class="gallery">
+    <article class="option">
+      <div class="option-head"><div><h2>Calm Swiss</h2><p>理性、克制、秩序感强；适合长期使用的效率工具。</p></div><span class="number">01</span></div>
+      <section class="sample swiss">
+        <nav class="mini-nav"><b class="mini-brand">Rhythm & Routine</b><span>TODAY / 06.18</span></nav>
+        <div class="swiss-main">
+          <div class="swiss-date"><strong>18</strong><small>JUN<br />THU</small></div>
+          <div class="swiss-content">
+            <div class="meta">下一个节奏 · 10:00—11:30</div>
+            <h3 class="task-title">设计日程块<br />数据结构</h3>
+            <div class="swiss-line"></div>
+            <div class="progress-row"><span>今日进度</span><span>68%</span></div>
+            <div class="swiss-track"><i></i></div>
+          </div>
+        </div>
+        <button type="button">开始专注 →</button>
+      </section>
+    </article>
+
+    <article class="option">
+      <div class="option-head"><div><h2>Soft Humanist</h2><p>柔和、陪伴感、低压力；更像一个理解你状态的日常伙伴。</p></div><span class="number">02</span></div>
+      <section class="sample soft">
+        <nav class="mini-nav"><b class="mini-brand">小律</b><span>今天状态不错</span></nav>
+        <div class="soft-card">
+          <div class="meta">上午的高专注时间</div>
+          <h3 class="task-title">先完成日程块的数据结构</h3>
+          <div class="soft-tags"><span>90 分钟</span><span>高专注</span><span>可调整</span></div>
+          <div class="soft-rhythm">
+            <div class="progress-row"><span>今天已经推进了不少</span><span>68%</span></div>
+            <div class="soft-track"><i></i></div>
+          </div>
+          <button type="button">好，开始吧</button>
+        </div>
+      </section>
+    </article>
+
+    <article class="option">
+      <div class="option-head"><div><h2>Editorial Ritual</h2><p>沉静、有仪式感、重视反思；适合强调人生叙事与回顾。</p></div><span class="number">03</span></div>
+      <section class="sample editorial">
+        <nav class="mini-nav"><b class="mini-brand">Rhythm Journal</b><span>VOL. 06 / NO. 18</span></nav>
+        <div class="editorial-kicker">Today’s intention</div>
+        <h3 class="task-title">把今天的节奏，变成看得见的进展。</h3>
+        <p class="editorial-copy">上午留给需要深度思考的事。不用赶，只需要在下一个九十分钟里，专心完成一件事。</p>
+        <div class="editorial-note"><strong>01</strong><span><b>日程块数据结构</b><br />10:00—11:30 · 高专注</span></div>
+        <button type="button">进入今天的第一章</button>
+      </section>
+    </article>
+
+    <article class="option">
+      <div class="option-head"><div><h2>Night Focus</h2><p>精准、沉浸、技术感；适合强调专注计时与即时状态。</p></div><span class="number">04</span></div>
+      <section class="sample night">
+        <nav class="mini-nav"><b class="mini-brand">R/R</b><span>FOCUS CHANNEL · READY</span></nav>
+        <div class="focus-ring"><span>61:24<small>MINUTES REMAIN</small></span></div>
+        <div class="night-task">
+          <div class="meta">CURRENT BLOCK / HIGH FOCUS</div>
+          <h3 class="task-title">设计日程块数据结构</h3>
+        </div>
+        <button type="button">PAUSE SESSION</button>
+      </section>
+    </article>
+  </main>
+</body>
+</html>

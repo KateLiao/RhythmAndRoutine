@@ -1,0 +1,2313 @@
+"use client";
+
+import {
+  ArrowRight,
+  CalendarDays,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  CircleDot,
+  Flag,
+  Leaf,
+  Maximize2,
+  Menu,
+  Minimize2,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  RefreshCcw,
+  RotateCcw,
+  Send,
+  Settings,
+  Sparkles,
+  Target,
+  Trash2,
+  X,
+} from "lucide-react";
+import { FormEvent, useEffect, useId, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
+import clsx from "clsx";
+import { Goal, buildLocalTaskCompletionRecord, initialGoals, initialSchedule, resolveScheduleTaskIds, scheduleInvestedMinutes, scheduleLinksTask, taskInvestedMinutes, ScheduleItem } from "@/lib/demo-data";
+import { zonedDateTimeToUtc } from "@/lib/timezone";
+import { changeSetApi, loadModelProviders, loadWorkspace, reviewApi, settingsApi, streamChatWithAgent, workspaceApi, type AgentChangeSet, type AgentStreamEvent, type ModelProviderInfo, type ReviewRecord, type RhythmSignalRecord, type UserSettings } from "@/lib/client-api";
+import { AgentMarkdown } from "@/components/agent-markdown";
+import { AgentProcessSteps, type AgentProcessStep } from "@/components/agent-process-steps";
+import { formatChangeOperationFieldValue, resolveChangeOperationFields, resolveChangeOperationLabel, resolveChangeOperationTitle } from "@/lib/change-operation-display";
+import { appendMessages, clearContext, getContextClearedAt, getContextMessages, loadMessages, syncContextScope } from "@/lib/conversation-store";
+import { inferCapability } from "@/agent/infer-capability";
+
+type View = "today" | "goals" | "goal-detail" | "task-detail" | "routines" | "review" | "settings";
+type Modal = "goal" | "goal-detail" | "task-create" | "task-edit" | "routine" | "schedule" | "schedule-edit" | "feedback" | null;
+
+const viewMeta: Record<View, { label: string; kicker: string; title: string }> = {
+  today: { label: "今天", kicker: "", title: "今天的节奏" },
+  goals: { label: "目标", kicker: "你正在靠近的方向", title: "目标与行动" },
+  "goal-detail": { label: "目标详情", kicker: "方向、行动与真实投入", title: "目标详情" },
+  "task-detail": { label: "任务详情", kicker: "把下一步看清楚", title: "任务详情" },
+  routines: { label: "Routine", kicker: "长期节奏，不是重复待办", title: "我的 Routine" },
+  review: { label: "回顾", kicker: "从真实执行里认识自己", title: "这一周，节奏正在成形" },
+  settings: { label: "设置", kicker: "模型、时间与使用边界", title: "偏好设置" },
+};
+
+function minutesToText(minutes: number) {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (!hours) return `${rest} 分钟`;
+  return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+}
+
+export function ProductShell() {
+  const [view, setView] = useState<View>("today");
+  const [goals, setGoals] = useState(initialGoals);
+  const [schedule, setSchedule] = useState(initialSchedule);
+  const [modal, setModal] = useState<Modal>(null);
+  const [selectedBlock, setSelectedBlock] = useState<string | null>(null);
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedRoutineId, setSelectedRoutineId] = useState<string | null>(null);
+  const [taskEditId, setTaskEditId] = useState<string | null>(null);
+  const [scheduleSeed, setScheduleSeed] = useState<ScheduleTimeSeed | null>(null);
+  const [dataMode, setDataMode] = useState<"checking" | "database" | "local">("checking");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState("qwen");
+  const [selectedModel, setSelectedModel] = useState("");
+  const [reviews, setReviews] = useState<ReviewRecord[]>([]);
+  const [rhythmSignals, setRhythmSignals] = useState<RhythmSignalRecord[]>([]);
+  const [userSettings, setUserSettings] = useState<UserSettings>({ timezone: "Asia/Shanghai", dailyReviewTime: "21:30", weeklyReviewDay: 0, weeklyReviewTime: "20:30", defaultModel: "qwen-plus" });
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [mobileNav, setMobileNav] = useState(false);
+  const [taskDetailEditing, setTaskDetailEditing] = useState(false);
+
+  useEffect(() => {
+    const savedGoals = localStorage.getItem("rr.goals");
+    const savedSchedule = localStorage.getItem("rr.schedule");
+    const restore = window.setTimeout(() => {
+      if (savedGoals) setGoals(migrateLocalGoals(JSON.parse(savedGoals)));
+      if (savedSchedule) setSchedule(JSON.parse(savedSchedule));
+      const savedReviews = localStorage.getItem("rr.reviews");
+      if (savedReviews) setReviews(JSON.parse(savedReviews));
+      const savedSettings = localStorage.getItem("rr.settings");
+      if (savedSettings) setUserSettings(JSON.parse(savedSettings));
+    }, 0);
+    loadWorkspace().then((workspace) => {
+      setGoals(workspace.goals);
+      setSchedule(workspace.schedule);
+      setRhythmSignals(workspace.rhythmSignals);
+      setDataMode("database");
+    }).catch(() => setDataMode("local"));
+    reviewApi.list().then(setReviews).catch(() => undefined);
+    settingsApi.get().then(setUserSettings).catch(() => undefined);
+    loadModelProviders().then((result) => {
+      setProviders(result.data);
+      const stored = localStorage.getItem("rr.provider") || result.defaultProvider;
+      const provider = result.data.find((item) => item.id === stored) ?? result.data[0];
+      if (provider) { setSelectedProvider(provider.id); setSelectedModel(localStorage.getItem("rr.model") || provider.model); }
+    }).catch(() => undefined);
+    return () => window.clearTimeout(restore);
+  }, []);
+
+  useEffect(() => localStorage.setItem("rr.goals", JSON.stringify(goals)), [goals]);
+  useEffect(() => localStorage.setItem("rr.schedule", JSON.stringify(schedule)), [schedule]);
+  useEffect(() => localStorage.setItem("rr.reviews", JSON.stringify(reviews)), [reviews]);
+  useEffect(() => localStorage.setItem("rr.settings", JSON.stringify(userSettings)), [userSettings]);
+
+  /**
+   * 顶部提示在展示 3 秒后自动消失；用户也可点击提前关闭。
+   */
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const selectedItem = schedule.find((item) => item.id === selectedBlock);
+  const selectedGoal = goals.find((goal) => goal.id === selectedGoalId);
+  const selectedTask = selectedGoal?.tasks?.find((task) => task.id === selectedTaskId);
+  const modalTask = selectedGoal?.tasks?.find((task) => task.id === (taskEditId ?? selectedTaskId));
+  const completed = schedule.filter((item) => (!item.date || item.date === currentDateKey()) && item.status === "completed").length;
+
+  function openFeedback(id: string) {
+    setSelectedBlock(id);
+    setModal("feedback");
+  }
+
+  async function refreshDatabase() {
+    const workspace = await loadWorkspace(userSettings.timezone);
+    setGoals(workspace.goals);
+    setSchedule(workspace.schedule);
+    setRhythmSignals(workspace.rhythmSignals);
+  }
+
+  async function saveGoal(goal: Goal) {
+    if (dataMode === "database") {
+      const created = await workspaceApi.createGoal({ title: goal.title, description: goal.description, category: goal.category, project: goal.project ?? undefined, skill: goal.skill ?? undefined, targetDate: goal.targetDate ?? undefined });
+      setSelectedGoalId(created.id);
+      await refreshDatabase();
+    } else { setGoals((items) => [goal, ...items]); setSelectedGoalId(goal.id); }
+    setModal(null);
+    setView("goal-detail");
+    setAgentOpen(true);
+    setNotice("目标已保存，小律已准备好帮你澄清");
+  }
+
+  async function updateScheduleTime(item: ScheduleItem, start: string, end: string) {
+    if (start === item.start && end === item.end) return;
+    setSchedule((items) => items.map((entry) => entry.id === item.id ? { ...entry, start, end, changeReason: "拖动调整时间" } : entry).sort((a, b) => a.start.localeCompare(b.start)));
+    if (dataMode === "database" && item.source === "routine_occurrence" && item.routineId && item.occurrenceDate) {
+      await workspaceApi.recordRoutineExecution({ routineId: item.routineId, occurrenceDate: item.occurrenceDate, plannedStartAt: zonedDateTimeToIso(item.date ?? currentDateKey(), item.start, userSettings.timezone), plannedEndAt: zonedDateTimeToIso(item.date ?? currentDateKey(), item.end, userSettings.timezone), status: "rescheduled", rescheduledStartAt: zonedDateTimeToIso(item.date ?? currentDateKey(), start, userSettings.timezone), rescheduledEndAt: zonedDateTimeToIso(item.date ?? currentDateKey(), end, userSettings.timezone), feedbackTags: [] });
+      await refreshDatabase();
+    } else if (dataMode === "database" && item.version) {
+      await workspaceApi.updateSchedule(item.id, {
+        startsAt: zonedDateTimeToIso(item.date ?? currentDateKey(), start, userSettings.timezone),
+        endsAt: zonedDateTimeToIso(item.date ?? currentDateKey(), end, userSettings.timezone),
+        changeReason: "拖动调整时间",
+        moveInPlace: true,
+        expectedVersion: item.version,
+      });
+      await refreshDatabase();
+    }
+  }
+
+  function openScheduleModal(seed?: ScheduleTimeSeed) {
+    setScheduleSeed(seed ?? null);
+    setModal("schedule");
+  }
+
+  function openTaskCreateModal() {
+    setTaskEditId(null);
+    setModal("task-create");
+  }
+
+  function openTaskEditModal(taskId: string) {
+    setTaskEditId(taskId);
+    setModal("task-edit");
+  }
+
+  function closeTaskModal() {
+    setModal(null);
+    setTaskEditId(null);
+  }
+
+  /**
+   * 在目标下创建新任务并刷新工作区数据。
+   * @param goalId - 所属目标 ID
+   * @param patch - 任务字段
+   */
+  async function createTaskForGoal(goalId: string, patch: TaskFormPatch) {
+    if (dataMode === "database") {
+      await workspaceApi.createTask(goalId, {
+        title: patch.title,
+        intent: patch.intent || undefined,
+        completionCriteria: patch.completionCriteria,
+        suggestedSteps: patch.suggestedSteps,
+        estimatedMinutes: patch.estimatedMinutes,
+        energyLevel: patch.energyLevel,
+        focusLevel: patch.focusLevel,
+        rhythmConditions: patch.rhythmConditions,
+        milestoneId: patch.milestoneId || undefined,
+      });
+      await refreshDatabase();
+    } else {
+      const task = {
+        id: crypto.randomUUID(),
+        title: patch.title,
+        status: "ready",
+        version: 1,
+        intent: patch.intent,
+        completionCriteria: patch.completionCriteria,
+        suggestedSteps: patch.suggestedSteps,
+        rhythmConditions: patch.rhythmConditions,
+        estimatedMinutes: patch.estimatedMinutes,
+        energyLevel: patch.energyLevel,
+        focusLevel: patch.focusLevel,
+        milestoneId: patch.milestoneId,
+      };
+      setGoals((items) => items.map((goal) => goal.id === goalId ? { ...goal, tasks: [...(goal.tasks ?? []), task], tasksTotal: goal.tasksTotal + 1 } : goal));
+    }
+    closeTaskModal();
+    setNotice("任务已创建");
+  }
+
+  /**
+   * 保存任务编辑内容。
+   * @param goalId - 所属目标 ID
+   * @param taskId - 任务 ID
+   * @param patch - 待更新的任务字段
+   */
+  async function saveTaskEdits(goalId: string, taskId: string, patch: TaskFormPatch, options?: { keepModalOpen?: boolean }) {
+    const goal = goals.find((entry) => entry.id === goalId);
+    const task = goal?.tasks?.find((entry) => entry.id === taskId);
+    if (!task) return;
+    if (dataMode === "database") {
+      await workspaceApi.updateTask(taskId, {
+        title: patch.title,
+        intent: patch.intent ?? undefined,
+        completionCriteria: patch.completionCriteria ?? undefined,
+        suggestedSteps: patch.suggestedSteps ?? undefined,
+        estimatedMinutes: patch.estimatedMinutes ?? undefined,
+        energyLevel: patch.energyLevel ?? undefined,
+        focusLevel: patch.focusLevel ?? undefined,
+        rhythmConditions: patch.rhythmConditions ?? undefined,
+        milestoneId: patch.milestoneId ?? undefined,
+        expectedVersion: task.version,
+      });
+      await refreshDatabase();
+    } else {
+      setGoals((items) => items.map((entry) => entry.id === goalId ? {
+        ...entry,
+        tasks: (entry.tasks ?? []).map((item) => item.id === taskId ? { ...item, ...patch, version: item.version + 1 } : item),
+      } : entry));
+    }
+    if (!options?.keepModalOpen) closeTaskModal();
+    setNotice("任务已保存");
+  }
+
+  /**
+   * 确认完成任务：汇总投入与执行记录，由 AI（或规则兜底）生成完成总结并入库。
+   * @param goalId - 所属目标 ID
+   * @param taskId - 任务 ID
+   */
+  async function completeTaskWithAi(goalId: string, taskId: string) {
+    const goal = goals.find((entry) => entry.id === goalId);
+    const task = goal?.tasks?.find((entry) => entry.id === taskId);
+    if (!task || task.status === "completed") return;
+    if (dataMode === "database") {
+      await workspaceApi.completeTask(taskId, task.version);
+      await refreshDatabase();
+    } else {
+      const completionRecord = buildLocalTaskCompletionRecord(task, schedule);
+      setGoals((items) => items.map((entry) => {
+        if (entry.id !== goalId) return entry;
+        return {
+          ...entry,
+          tasksDone: entry.tasksDone + 1,
+          tasks: (entry.tasks ?? []).map((item) => item.id === taskId ? { ...item, status: "completed", completionRecord, version: item.version + 1 } : item),
+        };
+      }));
+    }
+    setNotice("任务已完成，小律已总结执行情况");
+  }
+
+  /**
+   * 归档（删除）任务；若正在查看该任务详情则返回目标页。
+   * @param goalId - 所属目标 ID
+   * @param taskId - 任务 ID
+   */
+  async function archiveTaskById(goalId: string, taskId: string) {
+    const goal = goals.find((entry) => entry.id === goalId);
+    const task = goal?.tasks?.find((entry) => entry.id === taskId);
+    if (!task) return;
+    if (dataMode === "database") {
+      await workspaceApi.archiveTask(taskId, task.version);
+      await refreshDatabase();
+    } else {
+      setGoals((items) => items.map((entry) => entry.id === goalId ? {
+        ...entry,
+        tasks: (entry.tasks ?? []).filter((item) => item.id !== taskId),
+        tasksTotal: Math.max(0, entry.tasksTotal - 1),
+        tasksDone: task.status === "completed" ? Math.max(0, entry.tasksDone - 1) : entry.tasksDone,
+      } : entry));
+    }
+    if (selectedTaskId === taskId) {
+      setSelectedTaskId(null);
+      setView("goal-detail");
+    }
+    closeTaskModal();
+    setNotice("任务已删除");
+  }
+
+  async function saveSchedule(item: ScheduleItem) {
+    const taskIds = resolveScheduleTaskIds(item);
+    if (dataMode === "database") {
+      await workspaceApi.createSchedule({ title: item.title, goalId: item.goalId || undefined, taskId: taskIds[0], taskIds, routineId: item.routineId, startsAt: zonedDateTimeToIso(item.date ?? currentDateKey(), item.start, userSettings.timezone), endsAt: zonedDateTimeToIso(item.date ?? currentDateKey(), item.end, userSettings.timezone) });
+      await refreshDatabase();
+    } else setSchedule((items) => [...items, item].sort((a, b) => a.start.localeCompare(b.start)));
+    setModal(null);
+  }
+
+  async function saveFeedback(input: { tag: string; result: "completed" | "not_completed" | "rescheduled"; actualMinutes?: number; actualStartedAt?: string; actualEndedAt?: string; quality?: string; obstacle?: string; nextAction?: string; note?: string; comfortable?: boolean; timeFit?: string }) {
+    if (!selectedItem) return;
+    if (dataMode === "database" && selectedItem.source === "routine_occurrence" && selectedItem.routineId && selectedItem.occurrenceDate) {
+      await workspaceApi.recordRoutineExecution({ routineId: selectedItem.routineId, occurrenceDate: selectedItem.occurrenceDate, plannedStartAt: zonedDateTimeToIso(selectedItem.date ?? currentDateKey(), selectedItem.start, userSettings.timezone), plannedEndAt: zonedDateTimeToIso(selectedItem.date ?? currentDateKey(), selectedItem.end, userSettings.timezone), status: input.result === "completed" ? "completed" : input.result === "rescheduled" ? "rescheduled" : "skipped", actualMinutes: input.actualMinutes, feedbackTags: [feedbackTag(input.tag)], note: input.note });
+      await refreshDatabase();
+    } else if (dataMode === "database") {
+      await workspaceApi.recordExecution(selectedItem.id, { result: input.result, tags: [feedbackTag(input.tag)], actualMinutes: input.actualMinutes, actualStartedAt: input.actualStartedAt ? localInputToIso(input.actualStartedAt, userSettings.timezone) : undefined, actualEndedAt: input.actualEndedAt ? localInputToIso(input.actualEndedAt, userSettings.timezone) : undefined, quality: input.quality, obstacle: input.obstacle, nextAction: input.nextAction, deviationReason: input.result === "completed" ? undefined : input.note, note: input.note, comfortable: input.comfortable, timeFit: input.timeFit });
+      await refreshDatabase();
+    } else setSchedule((items) => items.map((item) => item.id === selectedItem.id ? { ...item, status: input.result === "completed" ? "completed" : "missed", feedback: input.tag } : item));
+    setModal(null);
+  }
+
+  async function generateReview(type: "daily" | "weekly") {
+    const start = type === "weekly" ? startOfCurrentWeek() : startOfDay(new Date()); const end = new Date(start); end.setDate(end.getDate() + (type === "weekly" ? 7 : 1));
+    if (dataMode === "database") {
+      const review = await reviewApi.generate(type, start.toISOString(), end.toISOString());
+      setReviews((items) => [review, ...items.filter((item) => item.id !== review.id)]);
+    } else {
+      const weekItems = schedule.filter((item) => { const date = item.date ? new Date(`${item.date}T12:00:00`) : new Date(); return date >= start && date < end; });
+      const completedCount = weekItems.filter((item) => item.status === "completed").length;
+      const review: ReviewRecord = { id: `local-${type}-${localDateKey(start)}`, type, status: "awaiting_confirmation", periodStart: start.toISOString(), periodEnd: end.toISOString(), summary: `${type === "weekly" ? "本周" : "今天"}完成 ${completedCount}/${weekItems.length} 个日程块。`, metrics: { total: weekItems.length, completed: completedCount }, findings: ["继续记录顺畅与阻力，节奏模式会逐渐清晰。"], suggestions: ["先处理未完成日程，再安排新的高专注任务。"] };
+      setReviews((items) => [review, ...items.filter((item) => item.id !== review.id)]);
+    }
+    setNotice(`${type === "weekly" ? "本周" : "今日"}回顾已生成，等待你确认`);
+  }
+
+  async function confirmReview(review: ReviewRecord) {
+    if (dataMode === "database") { const updated = await reviewApi.confirm(review.id, review.status !== "confirmed"); setReviews((items) => items.map((item) => item.id === review.id ? updated : item)); }
+    else setReviews((items) => items.map((item) => item.id === review.id ? { ...item, status: item.status === "confirmed" ? "draft" : "confirmed", confirmedAt: item.status === "confirmed" ? null : new Date().toISOString() } : item));
+    setNotice(review.status === "confirmed" ? "回顾确认已撤销" : "这份回顾已由你确认");
+  }
+
+  async function confirmOutcome(goalId: string, outcome: NonNullable<Goal["outcomes"]>[number]) {
+    if (dataMode === "database") { await workspaceApi.updateOutcome(outcome.id, { completed: true, expectedVersion: outcome.version }); await refreshDatabase(); }
+    else setGoals((items) => items.map((goal) => goal.id === goalId ? { ...goal, outcomes: goal.outcomes?.map((item) => item.id === outcome.id ? { ...item, completedAt: new Date().toISOString(), version: item.version + 1 } : item) } : goal));
+    setNotice("结果指标已由你确认完成");
+  }
+
+  async function confirmMilestone(goalId: string, milestone: NonNullable<Goal["milestones"]>[number]) {
+    if (dataMode === "database") { await workspaceApi.updateMilestone(milestone.id, { status: "completed", expectedVersion: milestone.version }); await refreshDatabase(); }
+    else setGoals((items) => items.map((goal) => goal.id === goalId ? { ...goal, milestones: goal.milestones?.map((item) => item.id === milestone.id ? { ...item, status: "completed", version: item.version + 1 } : item) } : goal));
+    setNotice("里程碑已由你确认完成");
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className={clsx("sidebar", mobileNav && "sidebar-open")}>
+        <div className="brand-row">
+          <div className="brand-mark" aria-hidden="true"><span /><span /><span /></div>
+          <div><strong>Rhythm <i>&</i> Routine</strong><small>目标推进系统</small></div>
+          <button className="icon-button mobile-close" onClick={() => setMobileNav(false)} aria-label="关闭导航"><X size={18} /></button>
+        </div>
+
+        <nav className="primary-nav" aria-label="主导航">
+          <NavButton active={view === "today"} icon={<CalendarDays />} label="今天" hint="4" onClick={() => { setView("today"); setMobileNav(false); }} />
+          <NavButton active={view === "goals" || view === "goal-detail" || view === "task-detail"} icon={<Target />} label="目标" onClick={() => { setView("goals"); setSelectedTaskId(null); setMobileNav(false); }} />
+          <NavButton active={view === "routines"} icon={<RefreshCcw />} label="Routine" onClick={() => { setView("routines"); setMobileNav(false); }} />
+          <NavButton active={view === "review"} icon={<RefreshCcw />} label="回顾" hint="新" onClick={() => { setView("review"); setMobileNav(false); }} />
+          <NavButton active={view === "settings"} icon={<Settings />} label="设置" onClick={() => { setView("settings"); setMobileNav(false); }} />
+        </nav>
+
+        <div className="sidebar-pulse">
+          <div className="pulse-orbit"><Leaf size={18} /></div>
+          <p>你最近的深度任务，在上午推进得更自然。</p>
+          <button onClick={() => setView("review")}>看看这个发现 <ArrowRight size={14} /></button>
+        </div>
+
+        <div className="sidebar-footer">
+          <button><Settings size={17} /><span>偏好设置</span></button>
+          <div className="profile-dot">C</div>
+          <div><strong>Calcifer</strong><small>Asia / Shanghai</small></div>
+        </div>
+      </aside>
+
+      {mobileNav && <button className="nav-scrim" aria-label="关闭导航" onClick={() => setMobileNav(false)} />}
+
+      <main className="main-stage">
+        {dataMode === "local" && <div className="mode-banner"><span>本地模式</span>数据库尚未连接，修改会安全保存在这台浏览器中。</div>}
+        {notice && <button className="notice-toast" onClick={() => setNotice(null)}>{notice}<X size={14} /></button>}
+        <header className={clsx("page-header", (view === "goal-detail" || view === "task-detail") && "detail-page-header")}>
+          <div className="header-copy">
+            <button className="icon-button menu-button" onClick={() => setMobileNav(true)} aria-label="打开导航"><Menu size={20} /></button>
+            {view === "goal-detail" && selectedGoal ? <div><button className="back-link" onClick={() => { setView("goals"); setSelectedTaskId(null); }}><ChevronLeft size={15} />返回目标列表</button><h1>{selectedGoal.title}</h1><p>{selectedGoal.description}</p></div> : view === "task-detail" && selectedGoal && selectedTask ? <div><button className="back-link" onClick={() => setView("goal-detail")}><ChevronLeft size={15} />返回目标详情</button><h1>{selectedTask.title}</h1><p>{selectedGoal.title}{selectedTask.milestoneId ? " · 关联里程碑" : " · 行动任务"}</p></div> : <div><span className="eyebrow">{view === "today" ? todayLabel() : viewMeta[view].kicker}</span><h1>{viewMeta[view].title}</h1></div>}
+          </div>
+          <div className="header-actions">
+            {view === "goal-detail" && selectedGoal && <button className="soft-button" onClick={() => setModal("goal-detail")}>编辑目标</button>}
+            {view === "task-detail" && selectedTask && <button className="soft-button" onClick={() => setTaskDetailEditing((value) => !value)}><Pencil size={16} />{taskDetailEditing ? "取消编辑" : "编辑任务"}</button>}
+            {view === "task-detail" && selectedTask && <button className="soft-button danger-outline" onClick={() => { if (window.confirm(`确定删除任务「${selectedTask.title}」？关联日程仍会保留在历史中。`)) void archiveTaskById(selectedGoal!.id, selectedTask.id); }}><Trash2 size={16} />删除任务</button>}
+            {view === "task-detail" && selectedTask && <button className="soft-button" onClick={() => { setScheduleSeed({ goalId: selectedGoalId ?? undefined, taskId: selectedTask.id }); setModal("schedule"); }}><CalendarDays size={16} />安排到日程</button>}
+            {view !== "settings" && <button className={view === "goal-detail" || view === "task-detail" ? "primary-button" : "soft-button"} onClick={() => setAgentOpen(true)}><Sparkles size={16} />{view === "goal-detail" ? "请小律规划" : view === "task-detail" ? "请小律拆分" : "请小律调整"}</button>}
+            {view === "goals" && <button className="primary-button" onClick={() => setModal("goal")}><Plus size={17} />新建目标</button>}
+            {view === "routines" && <button className="primary-button" onClick={() => { setSelectedRoutineId(null); setModal("routine"); }}><Plus size={17} />新建 Routine</button>}
+            {view === "today" && <button className="primary-button" onClick={() => { setScheduleSeed(null); setModal("schedule"); }}><Plus size={17} />安排事情</button>}
+          </div>
+        </header>
+
+        {view === "today" && <TodayView goals={goals} schedule={schedule} completed={completed} rhythmSignals={rhythmSignals} onFeedback={openFeedback} onEdit={(id) => { const item = schedule.find((entry) => entry.id === id); setSelectedBlock(id); setModal(item?.source === "routine_occurrence" ? "feedback" : "schedule-edit"); }} onAdd={openScheduleModal} onUpdateTime={updateScheduleTime} />}
+        {view === "goals" && <GoalsView goals={goals} onAdd={() => setModal("goal")} onOpen={(id) => { setSelectedGoalId(id); setSelectedTaskId(null); setView("goal-detail"); }} />}
+        {view === "goal-detail" && selectedGoal && <GoalDetailView goal={selectedGoal} schedule={schedule} reviews={reviews} rhythmSignals={rhythmSignals} onOpenTask={(taskId) => { setSelectedTaskId(taskId); setTaskDetailEditing(false); setView("task-detail"); }} onAddTask={openTaskCreateModal} onEditTask={openTaskEditModal} onDeleteTask={(taskId) => { const task = selectedGoal.tasks?.find((entry) => entry.id === taskId); if (task && window.confirm(`确定删除任务「${task.title}」？`)) void archiveTaskById(selectedGoal.id, taskId); }} onArrange={(seed) => openScheduleModal(seed)} onAskAgent={() => setAgentOpen(true)} />}
+        {view === "task-detail" && selectedGoal && selectedTask && <TaskDetailView goal={selectedGoal} task={selectedTask} schedule={schedule} rhythmSignals={rhythmSignals} editing={taskDetailEditing} onEditingChange={setTaskDetailEditing} onSave={(patch) => saveTaskEdits(selectedGoal.id, selectedTask.id, patch, { keepModalOpen: true }).then(() => setTaskDetailEditing(false))} onComplete={() => completeTaskWithAi(selectedGoal.id, selectedTask.id)} onArrange={() => openScheduleModal({ goalId: selectedGoal.id, taskId: selectedTask.id })} onEditSchedule={(id) => { setSelectedBlock(id); setModal("schedule-edit"); }} onFeedback={openFeedback} onAskAgent={() => setAgentOpen(true)} />}
+        {view === "routines" && <RoutinesView goals={goals} schedule={schedule} selectedRoutineId={selectedRoutineId} onSelect={setSelectedRoutineId} onEdit={(id) => { setSelectedRoutineId(id); setModal("routine"); }} onFeedback={openFeedback} onAskAgent={() => setAgentOpen(true)} />}
+        {view === "review" && <ReviewView goals={goals} schedule={schedule} reviews={reviews} onGenerate={(type) => void generateReview(type)} onConfirm={(review) => void confirmReview(review)} onConfirmOutcome={(goalId, outcome) => void confirmOutcome(goalId, outcome)} onConfirmMilestone={(goalId, milestone) => void confirmMilestone(goalId, milestone)} onAskAgent={() => setAgentOpen(true)} />}
+        {view === "settings" && <SettingsView providers={providers} provider={selectedProvider} model={selectedModel} settings={userSettings} onSave={async (provider, model, settings) => { setSelectedProvider(provider); setSelectedModel(model); setUserSettings(settings); localStorage.setItem("rr.provider", provider); localStorage.setItem("rr.model", model); if (dataMode === "database") await settingsApi.save({ ...settings, defaultModel: model }); setNotice("偏好设置已保存"); }} />}
+      </main>
+
+      <button className={clsx("agent-fab", agentOpen && "agent-fab-hidden")} onClick={() => setAgentOpen(true)} aria-label="打开小律">
+        <Sparkles size={18} /><span>问小律</span>
+      </button>
+      <AgentPanel open={agentOpen} onClose={() => setAgentOpen(false)} goals={goals} schedule={schedule} view={view} provider={selectedProvider} model={selectedModel} selectedGoalId={selectedGoalId} onApply={async (changeSet, indexes) => { if (dataMode === "database") { await changeSetApi.decide(changeSet.id, true, indexes); await refreshDatabase(); setNotice("小律的变更草案已应用"); } else applyLocalChangeSet({ ...changeSet, operations: changeSet.operations.filter((_, index) => indexes.includes(index)) }, goals, schedule, setGoals, setSchedule, setNotice); }} onReject={async (changeSet) => { if (dataMode === "database") await changeSetApi.decide(changeSet.id, false); setNotice("已拒绝这份草案，正式计划没有变化"); }} />
+
+      {modal === "goal" && <GoalModal onClose={() => setModal(null)} onSave={saveGoal} />}
+      {modal === "goal-detail" && selectedGoal && <GoalDetailModal goal={selectedGoal} dataMode={dataMode} onClose={() => setModal(null)} onChanged={async () => { if (dataMode === "database") await refreshDatabase(); }} onLocalChange={(next) => setGoals((items) => items.map((goal) => goal.id === next.id ? next : goal))} onLocalArchive={() => { setGoals((items) => items.filter((goal) => goal.id !== selectedGoal.id)); setModal(null); }} onNotice={setNotice} />}
+      {modal === "task-create" && selectedGoal && <TaskFormModal mode="create" goal={selectedGoal} dataMode={dataMode} onClose={closeTaskModal} onSave={(patch) => createTaskForGoal(selectedGoal.id, patch)} />}
+      {modal === "task-edit" && selectedGoal && modalTask && <TaskFormModal mode="edit" goal={selectedGoal} task={modalTask} dataMode={dataMode} onClose={closeTaskModal} onSave={(patch) => saveTaskEdits(selectedGoal.id, modalTask.id, patch)} onDelete={() => archiveTaskById(selectedGoal.id, modalTask.id)} />}
+      {modal === "routine" && <RoutineFormModal goals={goals} routineId={selectedRoutineId} dataMode={dataMode} timezone={userSettings.timezone} onClose={() => setModal(null)} onSaved={async (goalId, routine) => { if (dataMode === "database") await refreshDatabase(); else setGoals((items) => items.map((goal) => goal.id === goalId ? { ...goal, routines: routine.id ? [...(goal.routines ?? []).filter((item) => item.id !== routine.id), routine] : goal.routines } : goal)); setSelectedRoutineId(routine.id); setModal(null); setNotice("Routine 已保存"); }} />}
+      {modal === "schedule" && <ScheduleModal goals={goals} initialSelection={scheduleSeed ?? undefined} onClose={() => { setModal(null); setScheduleSeed(null); }} onSave={saveSchedule} />}
+      {modal === "schedule-edit" && selectedItem && <ScheduleEditModal item={selectedItem} dataMode={dataMode} goals={goals} onClose={() => setModal(null)} onSave={async (next, reason) => { const taskIds = resolveScheduleTaskIds(next); if (dataMode === "database" && next.version) { await workspaceApi.updateSchedule(next.id, { title: next.title, goalId: next.goalId || undefined, taskId: taskIds[0], taskIds, routineId: next.routineId, startsAt: zonedDateTimeToIso(next.date ?? currentDateKey(), next.start, userSettings.timezone), endsAt: zonedDateTimeToIso(next.date ?? currentDateKey(), next.end, userSettings.timezone), changeReason: reason.trim() || undefined, expectedVersion: next.version }); await refreshDatabase(); } else setSchedule((items) => items.map((item) => item.id === next.id ? { ...next, changeReason: reason } : item)); setModal(null); }} onDelete={async () => { if (dataMode === "database" && selectedItem.version) { await workspaceApi.deleteSchedule(selectedItem.id, selectedItem.version); await refreshDatabase(); } else setSchedule((items) => items.filter((item) => item.id !== selectedItem.id)); setModal(null); }} />}
+      {modal === "feedback" && selectedItem && <FeedbackModal item={selectedItem} onClose={() => setModal(null)} onSave={saveFeedback} />}
+    </div>
+  );
+}
+
+function migrateLocalGoals(value: unknown): Goal[] {
+  if (!Array.isArray(value)) return initialGoals;
+  const migrated: Goal[] = [];
+  for (const stored of value) {
+    if (!stored || typeof stored !== "object") continue;
+    const goal = stored as Goal;
+    const template = initialGoals.find((item) => item.id === goal.id);
+    if (!template) {
+      migrated.push({ ...goal, tasks: goal.tasks ?? [], routines: goal.routines ?? [], outcomes: goal.outcomes ?? [], milestones: goal.milestones ?? [] });
+      continue;
+    }
+    const restoredTasks = goal.tasks ?? template.tasks ?? [];
+    migrated.push({
+      ...template,
+      ...goal,
+      tasks: restoredTasks,
+      routines: goal.routines ?? template.routines ?? [],
+      outcomes: goal.outcomes ?? template.outcomes ?? [],
+      milestones: goal.milestones ?? template.milestones ?? [],
+      tasksDone: goal.tasks ? goal.tasksDone : restoredTasks.filter((task) => task.status === "completed").length,
+      tasksTotal: goal.tasks ? goal.tasksTotal : restoredTasks.length,
+    });
+  }
+  return migrated;
+}
+
+function NavButton({ active, icon, label, hint, onClick }: { active: boolean; icon: React.ReactNode; label: string; hint?: string; onClick: () => void }) {
+  return <button className={clsx("nav-button", active && "active")} onClick={onClick}>{icon}<span>{label}</span>{hint && <em>{hint}</em>}</button>;
+}
+
+function TodayView({ goals, schedule, completed, rhythmSignals, onFeedback, onEdit, onAdd, onUpdateTime }: { goals: Goal[]; schedule: ScheduleItem[]; completed: number; rhythmSignals: RhythmSignalRecord[]; onFeedback: (id: string) => void; onEdit: (id: string) => void; onAdd: (seed?: ScheduleTimeSeed) => void; onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void> }) {
+  const [calendarMode, setCalendarMode] = useState<"today" | "week" | "month">("today");
+  const [selectedDate, setSelectedDate] = useState(currentDateKey());
+  const [showRoutines, setShowRoutines] = useState(true);
+  const [showCompleted, setShowCompleted] = useState(true);
+  const [now, setNow] = useState(() => new Date());
+  const visibleSchedule = schedule.filter((item) => (showRoutines || item.kind !== "routine") && (showCompleted || item.status !== "completed"));
+  const todaySchedule = visibleSchedule.filter((item) => isActiveCalendarBlock(item) && ((!item.date && selectedDate === currentDateKey()) || item.date === selectedDate)).sort((a, b) => a.start.localeCompare(b.start));
+  useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 60_000); return () => window.clearInterval(timer); }, []);
+  function shiftDay(days: number) { const date = new Date(`${selectedDate}T12:00:00`); date.setDate(date.getDate() + days); setSelectedDate(localDateKey(date)); }
+  return (
+    <div className="content-grid">
+      <section className="rhythm-card">
+        <div className="section-heading">
+          <div><span className="section-kicker">今日轨道</span><h2>一步一步，不需要追赶</h2></div>
+          <div className="completion-ring"><strong>{completed}</strong><span>/ {todaySchedule.length}</span></div>
+        </div>
+        <div className="calendar-toolbar"><div className="calendar-switch" aria-label="日历视图">{(["today", "week", "month"] as const).map((mode) => <button key={mode} className={calendarMode === mode ? "active" : ""} onClick={() => setCalendarMode(mode)}>{mode === "today" ? "日" : mode === "week" ? "周" : "月"}</button>)}</div><div className="calendar-filters"><button className={showRoutines ? "active" : ""} onClick={() => setShowRoutines((value) => !value)}>↻ Routine</button><button className={showCompleted ? "active" : ""} onClick={() => setShowCompleted((value) => !value)}>已完成</button></div>{calendarMode === "today" && <div className="date-nav"><button onClick={() => shiftDay(-1)} aria-label="前一天"><ChevronLeft size={15} /></button><button onClick={() => setSelectedDate(currentDateKey())}>{selectedDate === currentDateKey() ? "今天" : selectedDate}</button><button onClick={() => shiftDay(1)} aria-label="后一天"><ChevronRight size={15} /></button></div>}</div>
+        {calendarMode === "today" && <HourlyDayTimeline date={selectedDate} now={now} items={todaySchedule} goals={goals} onFeedback={onFeedback} onEdit={onEdit} onAdd={onAdd} onUpdateTime={onUpdateTime} />}
+        {calendarMode === "week" && <WeekCalendar schedule={visibleSchedule} goals={goals} onEdit={onEdit} />}
+        {calendarMode === "month" && <MonthCalendar schedule={visibleSchedule} onEdit={onEdit} />}
+      </section>
+
+      <aside className="insight-column">
+        <section className="gentle-card greeting-card">
+          <div className="sun-shape"><span /></div>
+          <span className="section-kicker">此刻</span>
+          <h2>下午适合<br />稳稳推进</h2>
+          <p>上午的高专注任务已经完成。接下来给自己留一点进入状态的空间。</p>
+        </section>
+        <section className="gentle-card">
+          <div className="mini-heading"><span className="section-kicker">小律观察</span><Sparkles size={16} /></div>
+          <p className="quote">“{rhythmSignals[0]?.statement ?? "完成几次执行反馈后，这里会出现来自真实数据的节奏发现。"}”</p>
+          <button className="text-link">用于下次安排 <ArrowRight size={14} /></button>
+        </section>
+        <section className="gentle-card load-card">
+          <div className="mini-heading"><span className="section-kicker">本周负荷</span><span>适中</span></div>
+          <div className="load-bar"><i style={{ width: "68%" }} /></div>
+          <p>已安排 16 小时，完成 8 小时 30 分。周末仍留有恢复空间。</p>
+        </section>
+      </aside>
+    </div>
+  );
+}
+
+function HourlyDayTimeline({ date, now, items, goals, onFeedback, onEdit, onAdd, onUpdateTime }: { date: string; now: Date; items: ScheduleItem[]; goals: Goal[]; onFeedback: (id: string) => void; onEdit: (id: string) => void; onAdd: (seed?: ScheduleTimeSeed) => void; onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void> }) {
+  const startHour = 7;
+  const endHour = 24;
+  const timelineEndMinutes = 24 * 60 + 30;
+  const hourHeight = timelineHourHeight();
+  const startMinutes = startHour * 60;
+  const timelineHeight = ((timelineEndMinutes - startMinutes) / 60) * hourHeight;
+  const labelMinutes = [...Array.from({ length: endHour - startHour + 1 }, (_, index) => startMinutes + index * 60), timelineEndMinutes];
+  const day = new Date(`${date}T12:00:00`);
+  const currentMinutes = timeMinutesInTimezone(now, currentTimezone());
+  const currentTop = ((currentMinutes - startMinutes) / 60) * hourHeight;
+  const showNow = date === currentDateKey() && currentTop >= 0 && currentTop <= timelineHeight;
+  const completedCount = items.filter((item) => item.status === "completed").length;
+  const waitingCount = items.filter((item) => item.status === "planned").length;
+  const earlierPending = useMemo(() => {
+    if (date !== currentDateKey()) return [];
+    return items
+      .filter((item) => isEarlierUnfinishedSchedule(item, currentMinutes))
+      .sort((a, b) => parseClock(a.start) - parseClock(b.start));
+  }, [date, items, currentMinutes]);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const positionedDateRef = useRef<string | null>(null);
+  const [hiddenEarlierCount, setHiddenEarlierCount] = useState(0);
+
+  /**
+   * 进入日视图或切换日期时，将滚动位置定位到当前时间或首个日程附近。
+   */
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell || positionedDateRef.current === date) return;
+    const frame = window.requestAnimationFrame(() => {
+      positionedDateRef.current = date;
+      if (date === currentDateKey() && showNow) {
+        shell.scrollTop = Math.max(0, currentTop - shell.clientHeight * 0.5);
+        setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight));
+        return;
+      }
+      if (items.length) {
+        const firstMinutes = parseClock(items[0].start);
+        shell.scrollTop = Math.max(0, ((firstMinutes - startHour * 60) / 60) * hourHeight - 48);
+        setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight));
+        return;
+      }
+      shell.scrollTop = Math.max(0, ((10 - startHour) * hourHeight));
+      setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [date, showNow, currentTop, items, startHour, startMinutes, hourHeight, earlierPending]);
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const frame = window.requestAnimationFrame(() => {
+      setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [earlierPending, startMinutes, hourHeight]);
+
+  /**
+   * 将时间轴滚动到视口上方最近的一条待执行日程（开始时间最晚、仍被遮挡的那条）。
+   */
+  function scrollToEarlierPending() {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const hidden = listHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight);
+    const nearest = hidden[hidden.length - 1];
+    if (!nearest) return;
+    const itemTop = ((parseClock(nearest.start) - startMinutes) / 60) * hourHeight;
+    shell.scrollTo({ top: Math.max(0, itemTop - 20), behavior: "smooth" });
+  }
+
+  /**
+   * 在空白时间段上双击，按点击位置打开新建日程弹窗并预填时间。
+   * @param event - 时间轴 lane 上的鼠标事件
+   */
+  function handleLaneDoubleClick(event: MouseEvent<HTMLDivElement>) {
+    if ((event.target as HTMLElement).closest(".hour-block")) return;
+    const lane = event.currentTarget;
+    const rect = lane.getBoundingClientRect();
+    const y = event.clientY - rect.top;
+    const minutesFromDayStart = snapTimelineMinutes(Math.round((y / hourHeight) * 60));
+    const startMinutes = clampTimelineMinutes(startHour * 60 + minutesFromDayStart, startHour, endHour - 1);
+    const endMinutes = Math.min(endHour * 60, startMinutes + 60);
+    onAdd({ date, start: formatClock(startMinutes), end: formatClock(endMinutes) });
+  }
+
+  return <div className="day-timeline-module">
+    <div className="day-timeline-head"><div className="date-lockup"><strong>{day.getDate()}</strong><span><b>{new Intl.DateTimeFormat("zh-CN", { month: "short", weekday: "long" }).format(day)}</b><small>{completedCount ? `已经完成 ${completedCount} 项，按自己的节奏继续` : "给今天留出能够真正进入状态的空间"}</small></span></div><div className="rhythm-signature"><span>今日节奏</span><div>{[.45,.72,.9,.68,.52,.78,.38].map((height, index) => <i key={index} style={{ height: `${Math.round(height * 24)}px` }} />)}</div><small>专注 → 整理 → 身体</small></div></div>
+    {hiddenEarlierCount > 0 && <button type="button" className="earlier-pending-cue" onClick={scrollToEarlierPending}>↑ 上方还有 {hiddenEarlierCount} 个未完成日程</button>}
+    <div className="hourly-timeline-shell" ref={shellRef} onScroll={(event) => setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, event.currentTarget.scrollTop, startMinutes, hourHeight))}>
+      <div className="hour-label-column" style={{ height: `${timelineHeight}px` }}>{labelMinutes.map((minute) => <span key={minute} style={{ top: `${((minute - startMinutes) / 60) * hourHeight}px` }}>{formatTimelineMinute(minute)}</span>)}</div>
+      <div className="hourly-lane hourly-lane-interactive" style={{ height: `${timelineHeight}px`, "--hour-height": `${hourHeight}px` } as React.CSSProperties} onDoubleClick={handleLaneDoubleClick}>
+        {labelMinutes.slice(0, -1).map((minute) => <div className="hour-gridline" key={minute} style={{ top: `${((minute - startMinutes) / 60) * hourHeight}px` }} />)}
+        <div className="hour-gridline timeline-end-line" style={{ top: `${timelineHeight}px` }} />
+        {showNow && <div className="current-time-line" style={{ top: `${currentTop}px` }}><span>现在 {formatTimeInTimezone(now, currentTimezone())}</span><i /></div>}
+        {items.map((item) => <HourBlock key={item.id} item={item} goals={goals} startHour={startHour} endHour={endHour} hourHeight={hourHeight} onFeedback={onFeedback} onEdit={onEdit} onUpdateTime={onUpdateTime} />)}
+        {!items.length && <div className="hourly-empty"><Leaf size={18} /><strong>这一天还没有安排</strong><span>留白也可以，或放入一件真正想推进的事。</span><button onClick={() => onAdd({ date })}><Plus size={14} />安排一件事</button></div>}
+      </div>
+    </div>
+    <div className="day-timeline-summary"><span>{items.length} 个日程块</span><span>{completedCount} 个已完成</span><span>{waitingCount} 个待执行</span><button onClick={() => onAdd({ date })}><Plus size={14} />添加日程</button></div>
+  </div>;
+}
+
+type HourBlockDragKind = "move" | "resize-start" | "resize-end";
+
+/**
+ * 日视图中的单个日程块，支持拖动整体移动与上下边缘调整时长。
+ */
+function HourBlock({ item, goals, startHour, endHour, hourHeight, onFeedback, onEdit, onUpdateTime }: {
+  item: ScheduleItem;
+  goals: Goal[];
+  startHour: number;
+  endHour: number;
+  hourHeight: number;
+  onFeedback: (id: string) => void;
+  onEdit: (id: string) => void;
+  onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void>;
+}) {
+  const goal = goals.find((entry) => entry.id === item.goalId);
+  const task = goal?.tasks?.find((entry) => entry.id === item.taskId);
+  const [preview, setPreview] = useState<{ start: string; end: string } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<{ kind: HourBlockDragKind; pointerId: number; startY: number; originStart: number; originEnd: number } | null>(null);
+  const movedRef = useRef(false);
+  const commitRef = useRef(false);
+
+  const displayStart = preview?.start ?? item.start;
+  const displayEnd = preview?.end ?? item.end;
+  const startMinutes = parseClock(displayStart);
+  const endMinutes = parseClock(displayEnd);
+  const durationMins = Math.max(TIMELINE_SNAP_MINUTES, endMinutes - startMinutes);
+  const top = Math.max(0, ((startMinutes - startHour * 60) / 60) * hourHeight);
+  const height = Math.max(HOUR_BLOCK_MIN_HEIGHT, (durationMins / 60) * hourHeight);
+  const rhythmTag = rhythmConditionLabels(task?.rhythmConditions)[0];
+  const typeLabel = item.kind === "routine" ? "ROUTINE" : item.kind === "review" ? "REVIEW" : "TASK";
+  const goalMeta = goal ? `${goal.title}${task?.milestoneId ? " · 里程碑" : ""}` : null;
+
+  /**
+   * 开始拖动日程块，记录指针与原始起止时间。
+   * @param kind - 拖动类型：整体移动或调整开始/结束
+   * @param event - 指针按下事件
+   */
+  function beginDrag(kind: HourBlockDragKind, event: PointerEvent) {
+    event.stopPropagation();
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      kind,
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      originStart: parseClock(item.start),
+      originEnd: parseClock(item.end),
+    };
+    movedRef.current = false;
+    setDragging(true);
+  }
+
+  /**
+   * 根据指针位移更新预览中的起止时间。
+   * @param event - 指针移动事件
+   */
+  function handlePointerMove(event: PointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (Math.abs(event.clientY - drag.startY) > 2) movedRef.current = true;
+    const deltaMinutes = snapTimelineMinutes(Math.round(((event.clientY - drag.startY) / hourHeight) * 60));
+    let nextStart = drag.originStart;
+    let nextEnd = drag.originEnd;
+    if (drag.kind === "move") {
+      nextStart = drag.originStart + deltaMinutes;
+      nextEnd = drag.originEnd + deltaMinutes;
+    } else if (drag.kind === "resize-start") {
+      nextStart = drag.originStart + deltaMinutes;
+    } else {
+      nextEnd = drag.originEnd + deltaMinutes;
+    }
+    const clamped = clampBlockTimes(nextStart, nextEnd, startHour, endHour);
+    setPreview({ start: formatClock(clamped.start), end: formatClock(clamped.end) });
+  }
+
+  /**
+   * 结束拖动并将时间变更提交到日程数据。
+   * @param event - 指针抬起事件
+   */
+  function handlePointerUp(event: PointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    dragRef.current = null;
+    setDragging(false);
+    const nextPreview = preview;
+    setPreview(null);
+    if (nextPreview && (nextPreview.start !== item.start || nextPreview.end !== item.end) && !commitRef.current) {
+      commitRef.current = true;
+      void onUpdateTime(item, nextPreview.start, nextPreview.end).finally(() => { commitRef.current = false; });
+    }
+  }
+
+  return (
+    <article
+      className={clsx(
+        "hour-block",
+        item.kind,
+        item.status,
+        dragging && "is-dragging",
+        height < HOUR_BLOCK_MIN_HEIGHT + 28 && "is-compact",
+      )}
+      style={{ top: `${top}px`, height: `${height}px` }}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      onDoubleClick={() => onEdit(item.id)}
+    >
+      <span className="hour-block-accent" aria-hidden="true" />
+      <span className="hour-block-resize hour-block-resize-top" onPointerDown={(event) => beginDrag("resize-start", event)} aria-hidden="true" />
+      <span className="hour-block-resize hour-block-resize-bottom" onPointerDown={(event) => beginDrag("resize-end", event)} aria-hidden="true" />
+      <div className="hour-block-body">
+        <div
+          className="hour-block-info"
+          role="button"
+          tabIndex={0}
+          onPointerDown={(event) => beginDrag("move", event)}
+          onClick={() => { if (!movedRef.current) onEdit(item.id); }}
+          onKeyDown={(event) => { if (event.key === "Enter") onEdit(item.id); }}
+        >
+          <div className="hour-block-title-row">
+            <span className="hour-block-type">{typeLabel}</span>
+            <strong className="hour-block-title">{item.kind === "routine" ? `↻ ${item.title}` : item.title}</strong>
+          </div>
+          <div className="hour-block-meta-row">
+            <span className={clsx("hour-block-status", item.status)}>{scheduleStatusLabel(item.status)}</span>
+            {goalMeta && <span className="hour-block-goal"><span className={`goal-dot ${goal?.color ?? "violet"}`} />{goalMeta}</span>}
+            {rhythmTag && <span className="hour-block-chip">{rhythmTag}</span>}
+            {!goalMeta && !rhythmTag && <span className="hour-block-chip">{energyLabel(item.energy)}</span>}
+          </div>
+        </div>
+        <div className="hour-block-aside">
+          <span className="hour-block-duration">{minutesToCompact(durationMinutes(displayStart, displayEnd))}</span>
+          <div className="hour-block-aside-actions">
+            {item.status !== "completed" && (
+              <button type="button" className="hour-block-feedback-btn" onClick={() => onFeedback(item.id)}>记录执行</button>
+            )}
+            <button type="button" className="hour-block-more-btn" aria-label={`编辑 ${item.title}`} onClick={() => onEdit(item.id)}><MoreHorizontal size={16} /></button>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function WeekCalendar({ schedule, goals, onEdit }: { schedule: ScheduleItem[]; goals: Goal[]; onEdit: (id: string) => void }) {
+  const start = startOfCurrentWeek();
+  const days = Array.from({ length: 7 }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return date; });
+  return <div className="week-calendar">
+    {days.map((date) => {
+      const key = localDateKey(date);
+      const items = schedule.filter((item) => isActiveCalendarBlock(item) && (item.date ?? currentDateKey()) === key).sort((a, b) => a.start.localeCompare(b.start));
+      return <section className={clsx("week-day", key === currentDateKey() && "is-today")} key={key}><header><span>{new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(date)}</span><strong>{date.getDate()}</strong></header><div>{items.map((item) => { const goal = goals.find((entry) => entry.id === item.goalId); return <button key={item.id} className={clsx("week-event", item.kind)} onClick={() => onEdit(item.id)}><small>{item.start}</small><b>{item.title}</b>{goal && <em>{goal.title}</em>}</button>; })}{!items.length && <span className="week-empty">留白</span>}</div></section>;
+    })}
+  </div>;
+}
+
+function MonthCalendar({ schedule, onEdit }: { schedule: ScheduleItem[]; onEdit: (id: string) => void }) {
+  const [cursor, setCursor] = useState(() => new Date()); const now = cursor;
+  const first = new Date(now.getFullYear(), now.getMonth(), 1);
+  const gridStart = new Date(first);
+  gridStart.setDate(first.getDate() - ((first.getDay() + 6) % 7));
+  const days = Array.from({ length: 42 }, (_, index) => { const date = new Date(gridStart); date.setDate(gridStart.getDate() + index); return date; });
+  return <div className="month-wrap"><div className="month-navigation"><button onClick={() => setCursor(new Date(now.getFullYear(), now.getMonth() - 1, 1))}><ChevronLeft size={15} />上月</button><strong>{now.getFullYear()} 年 {now.getMonth() + 1} 月</strong><div><button onClick={() => setCursor(new Date())}>今天</button><button onClick={() => setCursor(new Date(now.getFullYear(), now.getMonth() + 1, 1))}>下月<ChevronRight size={15} /></button></div></div><div className="month-weekdays">{["一", "二", "三", "四", "五", "六", "日"].map((day) => <span key={day}>周{day}</span>)}</div><div className="month-calendar">{days.map((date) => {
+    const key = localDateKey(date); const items = schedule.filter((item) => isActiveCalendarBlock(item) && (item.date ?? currentDateKey()) === key); const currentMonth = date.getMonth() === now.getMonth();
+    return <section className={clsx("month-day", !currentMonth && "outside", key === currentDateKey() && "is-today")} key={key}><strong>{date.getDate()}</strong><div>{items.slice(0, 3).map((item) => <button key={item.id} className={item.kind} onClick={() => onEdit(item.id)}>{item.title}</button>)}{items.length > 3 && <small>还有 {items.length - 3} 项</small>}</div></section>;
+  })}</div><div className="calendar-legend"><span><i className="task" />任务</span><span><i className="routine" />Routine</span><span><i className="rescheduled" />改期</span></div></div>;
+}
+
+function RoutinesView({ goals, schedule, selectedRoutineId, onSelect, onEdit, onFeedback, onAskAgent }: { goals: Goal[]; schedule: ScheduleItem[]; selectedRoutineId: string | null; onSelect: (id: string) => void; onEdit: (id: string) => void; onFeedback: (id: string) => void; onAskAgent: () => void }) {
+  const routines = goals.flatMap((goal) => (goal.routines ?? []).map((routine) => ({ routine, goal })));
+  const selected = routines.find(({ routine }) => routine.id === selectedRoutineId) ?? routines[0];
+  return <div className="routine-page-grid">
+    <section className="routine-list-panel">
+      <div className="section-heading"><div><span className="section-kicker">持续中的节奏</span><h2>不是打卡，是逐渐变得自然</h2></div><span className="quiet-count">{routines.filter(({ routine }) => routine.status === "active").length} 个进行中</span></div>
+      <div className="routine-card-list">{routines.map(({ routine, goal }) => {
+        const occurrences = schedule.filter((item) => item.routineId === routine.id).sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
+        const completed = occurrences.filter((item) => item.status === "completed").length;
+        const decided = occurrences.filter((item) => item.status !== "planned").length;
+        const rate = decided ? Math.round(completed / decided * 100) : 0;
+        const recent = occurrences.slice(0, 7).reverse();
+        return <button type="button" className={clsx("routine-card", selected?.routine.id === routine.id && "active")} key={routine.id} onClick={() => onSelect(routine.id)}>
+          <div className="routine-card-top"><span className="routine-loop">↻</span><div><strong>{routine.title}</strong><small>{recurrenceLabel(routine.recurrenceRule)} · {routine.durationMinutes} 分钟 · {preferredWindowLabel(routine.preferredTimeOfDay, routine.preferredStartTime, routine.preferredEndTime)}</small></div><em>{routine.status === "active" ? "进行中" : routine.status === "paused" ? "已暂停" : "已结束"}</em></div>
+          <p>关联目标：{goal.title}</p>
+          <div className="routine-card-bottom"><div className="routine-dots">{recent.length ? recent.map((item) => <i key={item.id} className={item.status} title={`${item.date} ${scheduleStatusLabel(item.status)}`} />) : <span>执行后会在这里形成节奏轨迹</span>}</div><strong>{rate}%</strong><span>近期完成率</span></div>
+        </button>;
+      })}{!routines.length && <div className="entity-empty">还没有 Routine。创建一个足够小、愿意长期重复的行动。</div>}</div>
+    </section>
+    <aside className="routine-detail-panel">{selected ? <RoutineDetail routine={selected.routine} goal={selected.goal} schedule={schedule} onEdit={() => onEdit(selected.routine.id)} onFeedback={onFeedback} onAskAgent={onAskAgent} /> : <section className="gentle-card"><Leaf size={20} /><h3>先从一个很小的重复开始</h3><p>Routine 会按日历范围动态出现，不会制造一长串重复任务。</p></section>}</aside>
+  </div>;
+}
+
+function RoutineDetail({ routine, goal, schedule, onEdit, onFeedback, onAskAgent }: { routine: NonNullable<Goal["routines"]>[number]; goal: Goal; schedule: ScheduleItem[]; onEdit: () => void; onFeedback: (id: string) => void; onAskAgent: () => void }) {
+  const occurrences = schedule.filter((item) => item.routineId === routine.id).sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
+  const decided = occurrences.filter((item) => item.status !== "planned");
+  const completed = occurrences.filter((item) => item.status === "completed");
+  const rate = decided.length ? Math.round(completed.length / decided.length * 100) : 0;
+  let streak = 0; for (const item of decided) { if (item.status !== "completed") break; streak += 1; }
+  const next = occurrences.filter((item) => item.status === "planned").sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""))[0];
+  return <div className="routine-detail-stack">
+    <section className="routine-hero-card"><div className="routine-hero-orbit">↻</div><span className="section-kicker">{goal.title}</span><h2>{routine.title}</h2><p>{routine.description || "每一次都可以很小，稳定比完美更重要。"}</p>{routine.minimumVersion && <small>状态不佳时：{routine.minimumVersion}</small>}<div className="routine-hero-actions"><button className="soft-button small" onClick={onEdit}><Pencil size={14} />编辑规则</button><button className="primary-button small" onClick={onAskAgent}><Sparkles size={14} />请小律分析</button></div></section>
+    <section className="entity-section compact"><div className="entity-section-head"><div><span className="section-kicker">执行统计</span><h3>最近的坚持情况</h3></div></div><div className="routine-stat-grid"><div><strong>{rate}%</strong><span>近期完成率</span></div><div><strong>{streak}</strong><span>当前连续完成</span></div><div><strong>{completed.length}</strong><span>已完成次数</span></div><div><strong>{next ? `${next.date?.slice(5)} ${next.start}` : "—"}</strong><span>下一次</span></div></div></section>
+    <section className="entity-section compact"><div className="entity-section-head"><div><span className="section-kicker">执行记录</span><h3>每一次都留下证据</h3></div></div><div className="routine-history">{occurrences.slice(0, 8).map((item) => <article key={item.id}><i className={item.status} /><div><strong>{item.date} · {item.start}</strong><span>{scheduleStatusLabel(item.status)}{item.execution?.note ? ` · ${item.execution.note}` : ""}</span></div>{item.status === "planned" && <button onClick={() => onFeedback(item.id)}>记录</button>}</article>)}{!occurrences.length && <p>当前时间范围内还没有发生实例。</p>}</div></section>
+    <section className="routine-ai-card"><div><Sparkles size={17} /><span>小律分析</span></div><p>{decided.length ? `目前记录了 ${decided.length} 次执行，完成率 ${rate}%。继续补充“顺畅 / 有阻力”和一句原因，小律才能更可靠地判断是否该调整时段或降低门槛。` : "完成或跳过几次后，小律会结合反馈分析阻力、时间匹配和频率是否合适。"}</p><button onClick={onAskAgent}>基于记录生成调整建议 <ArrowRight size={14} /></button><small>建议不会直接修改 Routine，仍需你确认。</small></section>
+  </div>;
+}
+
+function RoutineFormModal({ goals, routineId, dataMode, timezone, onClose, onSaved }: { goals: Goal[]; routineId: string | null; dataMode: "checking" | "database" | "local"; timezone: string; onClose: () => void; onSaved: (goalId: string, routine: NonNullable<Goal["routines"]>[number]) => Promise<void> }) {
+  const existingPair = goals.flatMap((goal) => (goal.routines ?? []).map((routine) => ({ goal, routine }))).find((entry) => entry.routine.id === routineId);
+  const existing = existingPair?.routine;
+  const initialRule = parseRoutineFormRule(existing?.recurrenceRule);
+  const [goalId, setGoalId] = useState(existingPair?.goal.id ?? goals[0]?.id ?? "");
+  const [title, setTitle] = useState(existing?.title ?? ""); const [description, setDescription] = useState(existing?.description ?? "");
+  const [startDate, setStartDate] = useState(dateInputInTimezone(existing?.startDate, timezone) || currentDateKey()); const [endDate, setEndDate] = useState(dateInputInTimezone(existing?.endDate, timezone));
+  const [frequency, setFrequency] = useState(initialRule.frequency); const [weekdays, setWeekdays] = useState(initialRule.weekdays); const [interval, setInterval] = useState(initialRule.interval);
+  const [time, setTime] = useState(existing?.preferredStartTime ?? initialRule.time); const [endTime] = useState(existing?.preferredEndTime ?? ""); const [minutes, setMinutes] = useState(existing?.durationMinutes ?? 20); const [priority, setPriority] = useState(existing?.priority ?? "medium"); const [displayMode, setDisplayMode] = useState(existing?.displayMode ?? "subtle"); const [minimum, setMinimum] = useState(existing?.minimumVersion ?? ""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
+  const dayOptions = [["MO", "一"], ["TU", "二"], ["WE", "三"], ["TH", "四"], ["FR", "五"], ["SA", "六"], ["SU", "日"]] as const;
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(null);
+    const recurrenceRule = buildRoutineRule(frequency, interval, weekdays, startDate, time);
+    const patch = { title: title.trim(), description: description.trim() || null, recurrenceRule, startDate: zonedDateTimeToIso(startDate, "00:00", timezone), endDate: endDate ? zonedDateTimeToIso(endDate, "23:59", timezone) : null, durationMinutes: minutes, preferredStartTime: time, preferredEndTime: endTime || undefined, preferredTimeOfDay: timeOfDayFromClock(time), priority, displayMode, minimumVersion: minimum.trim() || null };
+    try {
+      let routine: NonNullable<Goal["routines"]>[number];
+      if (dataMode === "database") routine = existing ? await workspaceApi.updateRoutine(existing.id, { ...patch, expectedVersion: existing.version }) : await workspaceApi.createRoutine(goalId, patch);
+      else routine = { id: existing?.id ?? crypto.randomUUID(), status: existing?.status ?? "active", version: (existing?.version ?? 0) + 1, executionRecords: existing?.executionRecords ?? [], ...patch };
+      await onSaved(goalId, routine);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Routine 没有保存成功。"); } finally { setBusy(false); }
+  }
+  return <ModalShell title={existing ? "编辑整个 Routine" : "创建 Routine"} caption="这里只维护长期规则；日历中的发生实例会按当前范围动态出现。" onClose={onClose}><form className="form-stack" onSubmit={submit}><label>Routine 名称<input value={title} onChange={(event) => setTitle(event.target.value)} required placeholder="例如：英语口语练习" /></label><label>关联目标<select value={goalId} onChange={(event) => setGoalId(event.target.value)} disabled={Boolean(existing)}>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></label><label>为什么要保持它<textarea rows={2} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="它会怎样产生长期价值？" /></label><div className="field-row"><label>开始日期<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required /></label><label>结束日期（可选）<input type="date" min={startDate} value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label></div><div className="field-row"><label>重复方式<select value={frequency} onChange={(event) => setFrequency(event.target.value)}><option value="DAILY">每天</option><option value="WEEKLY">每周</option><option value="MONTHLY">每月</option><option value="YEARLY">每年</option></select></label><label>间隔<input type="number" min="1" max="30" value={interval} onChange={(event) => setInterval(Number(event.target.value))} /></label></div>{frequency === "WEEKLY" && <div className="weekday-picker" aria-label="选择星期">{dayOptions.map(([value, label]) => <button type="button" className={weekdays.includes(value) ? "active" : ""} key={value} onClick={() => setWeekdays((items) => items.includes(value) ? items.filter((item) => item !== value) : [...items, value])}>周{label}</button>)}</div>}<div className="field-row"><label>建议开始时间<input type="time" value={time} onChange={(event) => setTime(event.target.value)} /></label><label>执行时长（分钟）<input type="number" min="1" max="1440" value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} /></label></div><div className="field-row"><label>优先级<select value={priority} onChange={(event) => setPriority(event.target.value)}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label><label>日历显示<select value={displayMode} onChange={(event) => setDisplayMode(event.target.value)}><option value="subtle">弱化显示</option><option value="normal">正常显示</option><option value="hidden_from_calendar">从日历隐藏</option></select></label></div><label>最低可执行版本<input value={minimum} onChange={(event) => setMinimum(event.target.value)} placeholder="例如：状态差时只练 5 分钟" /></label>{error && <p className="form-error">{error}</p>}<div className="form-actions"><button type="button" className="soft-button" onClick={onClose}>取消</button><button className="primary-button" disabled={busy || !goalId || !title.trim()}>{busy ? "保存中…" : existing ? "修改整个 Routine" : "创建 Routine"}</button></div></form></ModalShell>;
+}
+
+function GoalsView({ goals, onAdd, onOpen }: { goals: Goal[]; onAdd: () => void; onOpen: (id: string) => void }) {
+  return (
+    <div className="goals-layout">
+      <section className="goal-list-card">
+        <div className="section-heading"><div><span className="section-kicker">方向层</span><h2>重要的事，正在怎样发生</h2></div><span className="quiet-count">{goals.length} 个目标</span></div>
+        <div className="goal-list">
+          {goals.map((goal) => {
+            const progress = goal.tasksTotal ? Math.round((goal.tasksDone / goal.tasksTotal) * 100) : 0;
+            return (
+              <article className="goal-row" key={goal.id}>
+                <div className={`goal-symbol ${goal.color}`}><Flag size={18} /></div>
+                <div className="goal-copy"><div className="goal-title-line"><h3>{goal.title}</h3><span className={clsx("status-pill", goal.status)}>{goal.status === "active" ? "推进中" : goal.status === "draft" ? "待澄清" : "已暂停"}</span></div><p>{goal.description}</p><div className="goal-stats"><span>本周 {minutesToText(goal.completedMinutes)}</span><span>{goal.tasksDone}/{goal.tasksTotal || "—"} 个任务</span></div></div>
+                <div className="goal-progress"><strong>{progress}%</strong><div><i style={{ width: `${progress}%` }} /></div></div>
+                <button className="icon-button" aria-label={`打开 ${goal.title}`} onClick={() => onOpen(goal.id)}><ChevronRight size={19} /></button>
+              </article>
+            );
+          })}
+        </div>
+        <button className="empty-action" onClick={onAdd}><Plus size={18} /><span><strong>开始一个新目标</strong><small>先写下方向，细节可以和小律一起弄清楚。</small></span></button>
+      </section>
+      <aside className="goal-aside">
+        <section className="gentle-card"><span className="section-kicker">待你确认</span><h3>里程碑 1 可能已经完成</h3><p>数据库与开发规格已经明确。小律建议你检查是否可以进入实现阶段。</p><div className="button-row"><button className="primary-button small">去确认</button><button className="soft-button small">稍后</button></div></section>
+        <section className="gentle-card"><span className="section-kicker">本周投入</span><div className="big-time">8<small>h</small>30<small>m</small></div><p>其中 69% 投入在 Rhythm & Routine MVP。</p></section>
+      </aside>
+    </div>
+  );
+}
+
+function GoalDetailView({ goal, schedule, reviews, rhythmSignals, onOpenTask, onAddTask, onEditTask, onDeleteTask, onArrange, onAskAgent }: { goal: Goal; schedule: ScheduleItem[]; reviews: ReviewRecord[]; rhythmSignals: RhythmSignalRecord[]; onOpenTask: (taskId: string) => void; onAddTask: () => void; onEditTask: (taskId: string) => void; onDeleteTask: (taskId: string) => void; onArrange: (seed: { goalId: string; taskId?: string; routineId?: string }) => void; onAskAgent: () => void }) {
+  const goalSchedule = schedule.filter((item) => item.goalId === goal.id);
+  const activeSchedule = goalSchedule.filter((item) => isActiveCalendarBlock(item));
+  const completedBlocks = goalSchedule.filter((item) => item.status === "completed");
+  const invested = completedBlocks.reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
+  const plannedMinutes = activeSchedule.reduce((sum, item) => sum + durationMinutes(item.start, item.end), 0);
+  const pendingConfirmation = (goal.outcomes ?? []).filter((item) => !item.completedAt).length + (goal.milestones ?? []).filter((item) => item.status === "ready_for_review").length;
+  const weekStart = startOfCurrentWeek();
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 7);
+  const weekSchedule = goalSchedule.filter((item) => {
+    const date = new Date(`${item.date ?? currentDateKey()}T12:00:00`);
+    return date >= weekStart && date < weekEnd;
+  });
+  const weekInvested = weekSchedule.filter((item) => item.status === "completed").reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
+  const weekCompletedCount = weekSchedule.filter((item) => item.status === "completed").length;
+  const maxDayMinutes = Math.max(30, ...Array.from({ length: 7 }, (_, index) => weekSchedule.filter((item) => item.status === "completed" && weekdayIndex(item.date ?? currentDateKey()) === index).reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0)));
+
+  return (
+    <div className="entity-page-grid">
+      <div className="entity-page-stack">
+        <section className="entity-section">
+          <div className="entity-section-head">
+            <div><span className="section-kicker">目标结构</span><h2>这个方向由什么组成</h2></div>
+            <span className={clsx("status-pill", goal.status)}>{goal.status === "active" ? "推进中" : goal.status === "draft" ? "待澄清" : "已暂停"}</span>
+          </div>
+          <div className="goal-structure-grid">
+            <article><span>结果指标 · 由你确认</span><strong>{goal.outcomes?.[0]?.description ?? "还没有结果指标"}</strong><small>{goal.outcomes?.[0]?.completedAt ? "已确认完成" : "在回顾中确认是否达成"}</small></article>
+            <article><span>项目</span><strong>{goal.project || goal.title}</strong><small>{goal.category ? goalCategoryLabel(goal.category) : "混合型目标"}</small></article>
+            <article><span>当前里程碑</span><strong>{goal.milestones?.find((item) => item.status !== "completed")?.title ?? "暂时没有进行中的里程碑"}</strong><small>{goal.milestones?.filter((item) => item.status === "completed").length ?? 0} 个里程碑已完成</small></article>
+            <article><span>重点能力</span><strong>{goal.skill || "尚未设置"}</strong><small>通过任务与 Routine 持续积累</small></article>
+          </div>
+        </section>
+
+        <section className="entity-section">
+          <div className="entity-section-head">
+            <div><span className="section-kicker">关联任务</span><h2>下一步具体做什么</h2><p>点击任务进入详情，或使用右侧按钮直接编辑、删除。</p></div>
+            <button className="soft-button small" onClick={onAddTask}><Plus size={14} />新建任务</button>
+          </div>
+          <div className="detail-task-list">
+            {goal.tasks?.map((task) => {
+              const investedMinutes = taskInvestedMinutes(task.id, schedule);
+              return (
+                <div className="detail-task-row" key={task.id}>
+                  <button type="button" className="detail-task-open" onClick={() => onOpenTask(task.id)}>
+                    <div><strong>{task.title}</strong><span className={clsx("status-pill", task.status)}>{taskStatusLabel(task.status)}</span></div>
+                    <p>{task.intent || "还没有填写任务意图。"}</p>
+                    <footer>
+                      <span className="task-invested-pill">已投入 {investedMinutes ? minutesToCompact(investedMinutes) : "0m"}</span>
+                      <span>预计 {task.estimatedMinutes ? minutesToCompact(task.estimatedMinutes) : "待估算"}</span>
+                      <span>{energyText(task.energyLevel)}</span>
+                      <span>{focusText(task.focusLevel)}</span>
+                      {rhythmConditionLabels(task.rhythmConditions)[0] && <span>{rhythmConditionLabels(task.rhythmConditions)[0]}</span>}
+                      <ChevronRight size={15} />
+                    </footer>
+                  </button>
+                  <div className="detail-task-row-actions">
+                    <button type="button" className="icon-button compact" aria-label={`编辑 ${task.title}`} onClick={() => onEditTask(task.id)}><Pencil size={15} /></button>
+                    <button type="button" className="icon-button compact danger-icon" aria-label={`删除 ${task.title}`} onClick={() => onDeleteTask(task.id)}><Trash2 size={15} /></button>
+                  </div>
+                </div>
+              );
+            })}
+            {!goal.tasks?.length && <div className="entity-empty">还没有任务。点击「新建任务」添加一个能够开始的动作。</div>}
+          </div>
+        </section>
+
+        <section className="entity-section">
+          <div className="entity-section-head">
+            <div>
+              <span className="section-kicker">时间投入与日程</span>
+              <h2>时间怎样进入这个目标</h2>
+              <p>基于真实执行记录统计，不含已改期或已取消的日程。</p>
+            </div>
+            <button className="soft-button small" onClick={() => onArrange({ goalId: goal.id })}><CalendarDays size={14} />安排事情</button>
+          </div>
+          <div className="goal-time-summary">
+            <div><strong>{minutesToCompact(invested)}</strong><span>累计真实投入</span></div>
+            <div><strong>{minutesToCompact(weekInvested)}</strong><span>本周真实投入</span></div>
+            <div><strong>{weekCompletedCount}/{weekSchedule.length || activeSchedule.length}</strong><span>本周完成/安排</span></div>
+            <div><strong>{minutesToCompact(plannedMinutes)}</strong><span>当前计划总量</span></div>
+          </div>
+          <p className="goal-time-caption">本周真实投入分布</p>
+          <div className="goal-time-bars">
+            {[1, 2, 3, 4, 5, 6, 0].map((weekday) => {
+              const minutes = weekSchedule.filter((item) => item.status === "completed" && weekdayIndex(item.date ?? currentDateKey()) === weekday).reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
+              return (
+                <div key={weekday}>
+                  <span>{["周日", "周一", "周二", "周三", "周四", "周五", "周六"][weekday]}</span>
+                  <i><b style={{ width: `${(minutes / maxDayMinutes) * 100}%` }} /></i>
+                  <em>{minutes ? minutesToCompact(minutes) : "—"}</em>
+                </div>
+              );
+            })}
+          </div>
+          {!goalSchedule.length && <div className="entity-empty">这个目标还没有进入日历。</div>}
+        </section>
+      </div>
+      <aside className="entity-side-stack">
+        <section className="entity-section compact"><span className="section-kicker">本周摘要</span><div className="entity-metrics"><div><strong>{minutesToCompact(invested)}</strong><span>真实投入</span></div><div><strong>{goal.tasksDone}</strong><span>完成任务</span></div><div><strong>{pendingConfirmation}</strong><span>待确认</span></div></div></section>
+        <section className="entity-section compact"><div className="entity-section-head"><div><span className="section-kicker">Routine</span><h3>重复积累</h3></div></div><div className="side-entity-list">{goal.routines?.map((routine) => <article key={routine.id}><div><strong>{routine.title}</strong><span>{routine.minimumVersion || routine.recurrenceRule}</span></div><button onClick={() => onArrange({ goalId: goal.id, routineId: routine.id })}>安排</button></article>)}{!goal.routines?.length && <p>还没有 Routine。</p>}</div></section>
+        <section className="entity-section compact"><div className="entity-section-head"><div><span className="section-kicker">小律建议</span><h3>从真实节奏出发</h3></div><button className="icon-button compact" onClick={onAskAgent}><Sparkles size={15} /></button></div><p className="entity-insight">{rhythmSignals[0]?.statement ?? "积累几次执行反馈后，小律会在这里解释适合这个目标的推进节奏。"}</p></section>
+        <section className="entity-section compact"><span className="section-kicker">回顾历史</span><div className="side-review-list">{reviews.slice(0, 3).map((review) => <article key={review.id}><strong>{review.type === "weekly" ? "周回顾" : "日回顾"}</strong><span>{review.summary}</span></article>)}{!reviews.length && <p>还没有回顾记录。</p>}</div></section>
+      </aside>
+    </div>
+  );
+}
+
+function TaskDetailView({ goal, task, schedule, rhythmSignals, editing, onEditingChange, onSave, onComplete, onArrange, onEditSchedule, onFeedback, onAskAgent }: {
+  goal: Goal;
+  task: NonNullable<Goal["tasks"]>[number];
+  schedule: ScheduleItem[];
+  rhythmSignals: RhythmSignalRecord[];
+  editing: boolean;
+  onEditingChange: (value: boolean) => void;
+  onSave: (patch: TaskFormPatch) => Promise<void>;
+  onComplete: () => Promise<void>;
+  onArrange: () => void;
+  onEditSchedule: (id: string) => void;
+  onFeedback: (id: string) => void;
+  onAskAgent: () => void;
+}) {
+  const taskSchedule = schedule.filter((item) => scheduleLinksTask(item, task.id));
+  const completedRuns = taskSchedule.filter((item) => item.status === "completed");
+  const investedMinutes = taskInvestedMinutes(task.id, schedule);
+  const [title, setTitle] = useState(task.title);
+  const [intent, setIntent] = useState(task.intent ?? "");
+  const [criteria, setCriteria] = useState((task.completionCriteria ?? []).join("\n"));
+  const [steps, setSteps] = useState((task.suggestedSteps ?? []).join("\n"));
+  const [rhythm, setRhythm] = useState(rhythmConditionLabels(task.rhythmConditions).join("\n"));
+  const [minutes, setMinutes] = useState(task.estimatedMinutes ?? 45);
+  const [energy, setEnergy] = useState(task.energyLevel ?? "medium");
+  const [focus, setFocus] = useState(task.focusLevel ?? "medium");
+  const [milestoneId, setMilestoneId] = useState(task.milestoneId ?? "");
+  const [busy, setBusy] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editing) return;
+    const frame = window.requestAnimationFrame(() => {
+      setTitle(task.title);
+      setIntent(task.intent ?? "");
+      setCriteria((task.completionCriteria ?? []).join("\n"));
+      setSteps((task.suggestedSteps ?? []).join("\n"));
+      setRhythm(rhythmConditionLabels(task.rhythmConditions).join("\n"));
+      setMinutes(task.estimatedMinutes ?? 45);
+      setEnergy(task.energyLevel ?? "medium");
+      setFocus(task.focusLevel ?? "medium");
+      setMilestoneId(task.milestoneId ?? "");
+      setError(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editing, task]);
+
+  /**
+   * 保存页面内编辑的任务字段。
+   * @param event - 表单提交事件
+   */
+  async function submitInlineEdit(event: FormEvent) {
+    event.preventDefault();
+    if (!title.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onSave({
+        title: title.trim(),
+        intent: intent.trim(),
+        completionCriteria: lines(criteria),
+        suggestedSteps: lines(steps),
+        rhythmConditions: lines(rhythm),
+        estimatedMinutes: minutes,
+        energyLevel: energy,
+        focusLevel: focus,
+        milestoneId: milestoneId || undefined,
+      });
+      onEditingChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "保存没有完成。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * 确认完成任务并触发 AI 完成总结。
+   */
+  async function submitComplete() {
+    if (task.status === "completed" || completing) return;
+    setCompleting(true);
+    setError(null);
+    try {
+      await onComplete();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "任务完成没有成功。");
+    } finally {
+      setCompleting(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="entity-page-grid task-page-grid">
+        <form className="entity-page-stack task-inline-editor" onSubmit={(event) => void submitInlineEdit(event)}>
+          <section className="entity-section">
+            <div className="entity-section-head">
+              <div><span className="section-kicker">编辑任务</span><h2>直接修改页面内容</h2></div>
+              <span className={clsx("status-pill", task.status)}>{taskStatusLabel(task.status)}</span>
+            </div>
+            <div className="form-stack inline-task-form">
+              <label>任务名称<input value={title} onChange={(event) => setTitle(event.target.value)} required /></label>
+              <label>任务意图<textarea rows={3} value={intent} onChange={(event) => setIntent(event.target.value)} placeholder="这件事为什么能推动目标？" /></label>
+              <label>完成标准<textarea rows={4} value={criteria} onChange={(event) => setCriteria(event.target.value)} placeholder="每行一条可验收结果" /></label>
+              <label>建议步骤<textarea rows={4} value={steps} onChange={(event) => setSteps(event.target.value)} placeholder="每行一步" /></label>
+              <label>适合的节奏条件<textarea rows={2} value={rhythm} onChange={(event) => setRhythm(event.target.value)} placeholder="每行一条" /></label>
+              {goal.milestones?.length ? (
+                <label>关联里程碑
+                  <select value={milestoneId} onChange={(event) => setMilestoneId(event.target.value)}>
+                    <option value="">不关联里程碑</option>
+                    {goal.milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.title}</option>)}
+                  </select>
+                </label>
+              ) : null}
+              <div className="field-row">
+                <label>预计分钟<input type="number" min={5} max={1440} value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} /></label>
+                <label>所需精力<select value={energy} onChange={(event) => setEnergy(event.target.value)}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+                <label>专注度<select value={focus} onChange={(event) => setFocus(event.target.value)}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+              </div>
+              {error && <p className="form-error">{error}</p>}
+              <div className="form-actions spread">
+                <button type="button" className="soft-button" onClick={() => onEditingChange(false)} disabled={busy}>取消</button>
+                <button className="primary-button" disabled={busy || !title.trim()}>{busy ? "保存中…" : "保存修改"}</button>
+              </div>
+            </div>
+          </section>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="entity-page-grid task-page-grid">
+      <div className="entity-page-stack">
+        <section className="entity-section task-intent">
+          <div className="entity-section-head">
+            <div><span className="section-kicker">任务意图</span><h2>为什么现在做这件事</h2></div>
+            <span className={clsx("status-pill", task.status)}>{taskStatusLabel(task.status)}</span>
+          </div>
+          <p>{task.intent || `完成“${task.title}”，让自己更靠近“${goal.title}”。`}</p>
+        </section>
+        <section className="entity-section">
+          <div className="entity-section-head">
+            <div><span className="section-kicker">完成标准</span><h2>做到什么算完成</h2></div>
+            {task.status !== "completed" && (
+              <button type="button" className="primary-button small" disabled={completing} onClick={() => void submitComplete()}>
+                <Check size={14} />{completing ? "小律总结中…" : "确认完成"}
+              </button>
+            )}
+          </div>
+          <ul className="detail-checklist">{(task.completionCriteria?.length ? task.completionCriteria : ["明确这个任务的可验收结果", "完成后记录执行结果与节奏反馈"]).map((criterion) => <li key={criterion}><span><Check size={13} /></span>{criterion}</li>)}</ul>
+          {error && <p className="form-error">{error}</p>}
+          {task.completionRecord && (
+            <div className="task-completion-summary">
+              <article>
+                <span className="section-kicker">执行回顾</span>
+                <p>{task.completionRecord.executionSummary}</p>
+                <small>累计投入 {minutesToCompact(task.completionRecord.investedMinutes)} · {task.completionRecord.completedSessions} 次已完成安排 · {task.completionRecord.source === "ai" ? "小律总结" : "规则总结"}</small>
+              </article>
+              <article>
+                <span className="section-kicker">完成评价</span>
+                <p>{task.completionRecord.overallEvaluation}</p>
+              </article>
+            </div>
+          )}
+        </section>
+        <section className="entity-section">
+          <div className="entity-section-head"><div><span className="section-kicker">执行指导</span><h2>进入任务的路径</h2></div></div>
+          <ol className="detail-steps">{(task.suggestedSteps?.length ? task.suggestedSteps : ["先完成最小可交付版本", "检查完成标准", "记录下一步"]).map((step, index) => <li key={step}><span>{String(index + 1).padStart(2, "0")}</span><p>{step}</p></li>)}</ol>
+        </section>
+        <section className="entity-section">
+          <div className="entity-section-head">
+            <div><span className="section-kicker">执行历史</span><h2>计划与真实发生的事</h2></div>
+            <button className="soft-button small" onClick={onArrange}><Plus size={14} />再次安排</button>
+          </div>
+          <div className="execution-history">
+            {taskSchedule.map((item) => (
+              <article key={item.id}>
+                <button onClick={() => onEditSchedule(item.id)}>
+                  <strong>{item.date ?? currentDateKey()} · {item.start}–{item.end}</strong>
+                  <span className={clsx("status-pill", item.status)}>{scheduleStatusLabel(item.status)}</span>
+                </button>
+                <p>计划 {minutesToCompact(durationMinutes(item.start, item.end))}{item.execution?.actualMinutes != null ? `，实际 ${minutesToCompact(item.execution.actualMinutes)}` : ""}。{item.execution?.obstacle || item.execution?.deviationReason || (item.feedback ? `节奏反馈：${feedbackLabel(item.feedback)}` : "等待执行反馈。")}</p>
+                {item.status !== "completed" && <button className="history-feedback" onClick={() => onFeedback(item.id)}>记录执行</button>}
+              </article>
+            ))}
+            {!taskSchedule.length && <div className="entity-empty">这个任务还没有安排到日历。<button onClick={onArrange}>现在安排</button></div>}
+          </div>
+        </section>
+      </div>
+      <aside className="entity-side-stack">
+        <section className="entity-section compact">
+          <span className="section-kicker">真实投入</span>
+          <div className="task-invested-hero">
+            <strong>{investedMinutes ? minutesToCompact(investedMinutes) : "0m"}</strong>
+            <span>{completedRuns.length ? `来自 ${completedRuns.length} 次已完成安排` : "完成日程后会在这里累计"}</span>
+          </div>
+        </section>
+        <section className="entity-section compact">
+          <span className="section-kicker">节奏匹配</span>
+          <div className="task-facts">
+            <div><span>预计耗时</span><strong>{task.estimatedMinutes ? minutesToCompact(task.estimatedMinutes) : "待估算"}</strong></div>
+            <div><span>所需精力</span><strong>{energyText(task.energyLevel)}</strong></div>
+            <div><span>所需专注</span><strong>{focusText(task.focusLevel)}</strong></div>
+            <div><span>适合条件</span><strong>{rhythmConditionLabels(task.rhythmConditions).join(" / ") || "继续观察"}</strong></div>
+          </div>
+        </section>
+        <section className="entity-section compact">
+          <div className="entity-section-head"><div><span className="section-kicker">关联日程</span><h3>{taskSchedule.length} 次安排</h3></div><button className="icon-button compact" onClick={onArrange}><Plus size={15} /></button></div>
+          <div className="side-entity-list">{taskSchedule.slice(0, 4).map((item) => <article key={item.id}><button className="side-schedule-link" onClick={() => onEditSchedule(item.id)}><strong>{item.date ?? currentDateKey()} {item.start}</strong><span>{scheduleStatusLabel(item.status)}</span></button></article>)}</div>
+        </section>
+        <section className="entity-section compact">
+          <div className="entity-section-head"><div><span className="section-kicker">小律判断</span><h3>{completedRuns.length ? "节奏正在形成" : "先从一次真实执行开始"}</h3></div><button className="icon-button compact" onClick={onAskAgent}><Sparkles size={15} /></button></div>
+          <p className="entity-insight">{rhythmSignals[0]?.statement ?? (task.focusLevel === "high" ? "这是一个高专注任务，优先放到连续、不易被打断的时间窗口。" : "完成后记录一次节奏反馈，小律会据此判断任务粒度和时间匹配。")}</p>
+          <button className="soft-button small full-width" onClick={onAskAgent}>让小律解释这个任务</button>
+        </section>
+      </aside>
+    </div>
+  );
+}
+
+function ReviewView({ goals, schedule, reviews, onGenerate, onConfirm, onConfirmOutcome, onConfirmMilestone, onAskAgent }: { goals: Goal[]; schedule: ScheduleItem[]; reviews: ReviewRecord[]; onGenerate: (type: "daily" | "weekly") => void; onConfirm: (review: ReviewRecord) => void; onConfirmOutcome: (goalId: string, outcome: NonNullable<Goal["outcomes"]>[number]) => void; onConfirmMilestone: (goalId: string, milestone: NonNullable<Goal["milestones"]>[number]) => void; onAskAgent: () => void }) {
+  const [type, setType] = useState<"daily" | "weekly">("weekly");
+  const weekStart = startOfCurrentWeek(); const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
+  const weekItems = schedule.filter((item) => { const date = item.date ? new Date(`${item.date}T12:00:00`) : new Date(); return date >= weekStart && date < weekEnd; });
+  const completed = weekItems.filter((item) => item.status === "completed");
+  const missed = weekItems.filter((item) => item.status === "missed");
+  const investedMinutes = completed.reduce((sum, item) => sum + durationMinutes(item.start, item.end), 0);
+  const smooth = completed.filter((item) => item.feedback === "顺畅" || item.feedback === "smooth").length;
+  const latest = reviews.find((review) => review.type === type);
+  const confirmationItems = goals.flatMap((goal) => [
+    ...(goal.milestones ?? []).filter((item) => item.status === "ready_for_review").map((item) => ({ kind: "milestone" as const, goal, item })),
+    ...(goal.outcomes ?? []).filter((item) => !item.completedAt).map((item) => ({ kind: "outcome" as const, goal, item })),
+  ]).slice(0, 6);
+  return (
+    <div className="review-layout">
+      <section className="review-hero">
+        <div className="review-tabs"><button className={type === "daily" ? "active" : ""} onClick={() => setType("daily")}>日回顾</button><button className={type === "weekly" ? "active" : ""} onClick={() => setType("weekly")}>周回顾</button></div>
+        <span className="section-kicker">{type === "weekly" ? reviewPeriodLabel(weekStart, weekEnd) : todayLabel()}</span>
+        <p className="review-lead">你不是做得更多了，<br />而是更知道什么时候适合做什么。</p>
+        <div className="review-metrics"><div><strong>{completed.length}</strong><span>完成日程块</span></div><div><strong>{missed.length}</strong><span>未完成/改期</span></div><div><strong>{minutesToCompact(investedMinutes)}</strong><span>真实投入</span></div></div>
+        <button className="review-generate" onClick={() => onGenerate(type)}><RefreshCcw size={15} />生成并保存{type === "weekly" ? "本周" : "今日"}回顾</button>
+      </section>
+      <section className="patterns-card">
+        <div className="section-heading"><div><span className="section-kicker">Rhythm Signals</span><h2>这一周显露的节奏</h2></div></div>
+        <div className="pattern-list">
+          <Pattern icon={<Sparkles />} tone="violet" title="顺畅时刻正在积累" text={smooth ? `本周已有 ${smooth} 次执行被标记为顺畅，可以继续观察它们集中在哪些时间段。` : "完成日程后记录一次节奏反馈，小律才能从真实经历中发现模式。"} />
+          <Pattern icon={<Leaf />} tone="sage" title="Routine 的稳定性" text={`${goals.reduce((sum, goal) => sum + (goal.routines?.length ?? 0), 0)} 个 Routine 正在参与目标推进；比连续天数更重要的是找到可持续的最低版本。`} />
+          <Pattern icon={<CircleDot />} tone="coral" title="计划偏差也是信息" text={missed.length ? `本周有 ${missed.length} 个日程块没有按原计划完成，回顾原因后再决定改期、拆小或放弃。` : "本周暂时没有记录到未完成日程块。"} />
+        </div>
+      </section>
+      {latest && <section className={clsx("saved-review", latest.status === "failed" && "review-failed")}><div><span className="section-kicker">最近生成</span><h2>{latest.status === "confirmed" ? "这份回顾已经确认" : latest.status === "failed" ? "这份回顾生成失败" : latest.status === "generating" ? "正在生成回顾" : "这份回顾等待你确认"}</h2><p>{latest.summary || (latest.status === "failed" ? "数据仍然安全保留，可以重新生成。" : "正在整理真实执行记录…")}</p></div><ul>{latest.findings?.map((finding) => <li key={finding}>{finding}</li>)}</ul><div className="button-row">{latest.status === "failed" ? <button className="primary-button" onClick={() => onGenerate(type)}>重新生成</button> : latest.status !== "generating" && <button className="primary-button" onClick={() => onConfirm(latest)}>{latest.status === "confirmed" ? "撤销确认" : "确认这份回顾"}</button>}<button className="soft-button" onClick={onAskAgent}>请小律解释</button></div></section>}
+      {confirmationItems.length > 0 && <section className="review-confirmations"><div><span className="section-kicker">只由你确认</span><h2>阶段与结果</h2><p>系统只提供执行证据，不替你判断目标是否达成。</p></div><div>{confirmationItems.map(({ kind, goal, item }) => <article key={item.id}><span>{kind === "milestone" ? "里程碑" : "结果指标"} · {goal.title}</span><strong>{"title" in item ? item.title : item.description}</strong><button onClick={() => kind === "milestone" ? onConfirmMilestone(goal.id, item) : onConfirmOutcome(goal.id, item)}>确认完成</button></article>)}</div></section>}
+      <section className="change-card">
+        <div><span className="section-kicker">下一步</span><h2>让建议来自你的真实执行</h2><p>小律会读取本周日程、执行状态和节奏反馈，先生成调整草案；只有你确认后才会修改计划。</p></div>
+        <div className="button-row"><button className="primary-button" onClick={onAskAgent}><Sparkles size={16} />生成调整建议</button></div>
+      </section>
+    </div>
+  );
+}
+
+function Pattern({ icon, tone, title, text }: { icon: React.ReactNode; tone: string; title: string; text: string }) {
+  return <article className="pattern"><div className={`pattern-icon ${tone}`}>{icon}</div><div><h3>{title}</h3><p>{text}</p></div></article>;
+}
+
+function SettingsView({ providers, provider, model, settings, onSave }: { providers: ModelProviderInfo[]; provider: string; model: string; settings: UserSettings; onSave: (provider: string, model: string, settings: UserSettings) => Promise<void> }) {
+  const [selected, setSelected] = useState(provider); const [modelId, setModelId] = useState(model);
+  const [timezone, setTimezone] = useState(settings.timezone); const [dailyTime, setDailyTime] = useState(settings.dailyReviewTime); const [weeklyDay, setWeeklyDay] = useState(settings.weeklyReviewDay); const [weeklyTime, setWeeklyTime] = useState(settings.weeklyReviewTime); const [saving, setSaving] = useState(false);
+  const current = providers.find((item) => item.id === selected);
+  function choose(next: string) { setSelected(next); const info = providers.find((item) => item.id === next); if (info) setModelId(info.model); }
+  async function save() { setSaving(true); try { await onSave(selected, modelId, { timezone, dailyReviewTime: dailyTime, weeklyReviewDay: weeklyDay, weeklyReviewTime: weeklyTime, defaultModel: modelId }); } finally { setSaving(false); } }
+  return <div className="settings-layout"><section className="settings-card"><div className="section-heading"><div><span className="section-kicker">小律的大脑</span><h2>模型与回顾偏好</h2></div><span className={clsx("provider-state", current?.enabled && "ready")}>{current?.enabled ? "已配置" : "等待 API Key"}</span></div><div className="form-stack"><label>供应商<select value={selected} onChange={(event) => choose(event.target.value)}>{providers.map((item) => <option key={item.id} value={item.id}>{item.label}{item.enabled ? " · 已配置" : ""}</option>)}</select></label><label>模型 ID<input value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder="供应商模型名称" /></label><div className="provider-endpoint"><span>服务地址</span><code>{current?.baseUrl ?? "读取中…"}</code></div>{!current?.enabled && <div className="form-note"><Settings size={16} /><span>在项目 `.env` 中填写对应 API Key，重启应用后即可调用。密钥不会发送到浏览器。</span></div>}<div className="settings-divider" /><label>时区<select value={timezone} onChange={(event) => setTimezone(event.target.value)}><option value="Asia/Shanghai">Asia/Shanghai</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Europe/London">Europe/London</option><option value="America/Los_Angeles">America/Los_Angeles</option></select></label><div className="field-row"><label>日回顾时间<input type="time" value={dailyTime} onChange={(event) => setDailyTime(event.target.value)} /></label><label>周回顾时间<input type="time" value={weeklyTime} onChange={(event) => setWeeklyTime(event.target.value)} /></label></div><label>周回顾日<select value={weeklyDay} onChange={(event) => setWeeklyDay(Number(event.target.value))}><option value={0}>星期日</option><option value={1}>星期一</option><option value={5}>星期五</option><option value={6}>星期六</option></select></label><div className="form-actions"><button className="primary-button" disabled={saving} onClick={() => void save()}>{saving ? "保存中…" : "保存偏好"}</button></div></div></section><aside className="provider-list"><span className="section-kicker">已支持</span>{providers.map((item) => <div key={item.id}><i className={item.enabled ? "ready" : ""} /><span><strong>{item.label}</strong><small>{item.model}</small></span></div>)}</aside></div>;
+}
+
+type AgentMessage = { role: "user" | "assistant"; text: string; streaming?: boolean; timestamp?: string; processSteps?: AgentProcessStep[] };
+
+const WELCOME_TEXT = "我已经看过当前页面的目标和日程。想一起梳理什么？";
+
+function AgentPanel({ open, onClose, goals, schedule, view, provider, model, selectedGoalId, onApply, onReject }: { open: boolean; onClose: () => void; goals: Goal[]; schedule: ScheduleItem[]; view: View; provider: string; model: string; selectedGoalId: string | null; onApply: (changeSet: AgentChangeSet, indexes: number[]) => Promise<void>; onReject: (changeSet: AgentChangeSet) => Promise<void> }) {
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [contextClearedAt, setContextClearedAt] = useState<string | undefined>(undefined);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [changeSet, setChangeSet] = useState<AgentChangeSet | null>(null);
+  const [selectedOps, setSelectedOps] = useState<Set<number>>(new Set());
+  const [statusText, setStatusText] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // 面板打开时从 localStorage 加载历史对话
+  useEffect(() => {
+    if (open && !historyLoaded) {
+      let active = true;
+      Promise.resolve().then(() => {
+        if (!active) return;
+        const stored = loadMessages();
+        setContextClearedAt(getContextClearedAt());
+        setMessages(stored.length > 0 ? stored.map((m) => ({ role: m.role, text: m.text, timestamp: m.timestamp })) : [{ role: "assistant", text: WELCOME_TEXT }]);
+        setHistoryLoaded(true);
+      });
+      return () => { active = false; };
+    }
+  }, [open, historyLoaded]);
+
+  // 面板打开或切换目标时，同步上下文范围并在目标变更时自动隔离旧对话
+  useEffect(() => {
+    if (!open) return;
+    const { clearedAt } = syncContextScope({ view, goalId: selectedGoalId });
+    if (!clearedAt) return;
+    const frame = window.requestAnimationFrame(() => setContextClearedAt(clearedAt));
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, view, selectedGoalId]);
+
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, statusText, loading]);
+  useEffect(() => { if (open && !changeSet) changeSetApi.list().then((items) => { const pending = items[0] ?? null; setChangeSet(pending); setSelectedOps(new Set(pending?.operations.map((_, index) => index) ?? [])); }).catch(() => undefined); }, [open, changeSet]);
+
+  /**
+   * 更新当前流式助手消息的部分字段。
+   * @param patch - 要合并的字段或基于原消息的更新函数
+   */
+  function patchStreamingMessage(patch: Partial<AgentMessage> | ((message: AgentMessage) => AgentMessage)) {
+    setMessages((items) => {
+      const next = [...items];
+      const last = next[next.length - 1];
+      if (last?.role === "assistant" && last.streaming) {
+        next[next.length - 1] = typeof patch === "function" ? patch(last) : { ...last, ...patch };
+      }
+      return next;
+    });
+  }
+
+  /**
+   * 更新当前流式助手消息的处理步骤列表。
+   * @param updater - 基于现有步骤返回新列表
+   */
+  function patchStreamingSteps(updater: (steps: AgentProcessStep[]) => AgentProcessStep[]) {
+    patchStreamingMessage((message) => ({ ...message, processSteps: updater(message.processSteps ?? []) }));
+  }
+
+  /**
+   * 处理 SSE 流事件，更新状态文案、工具步骤与流式回复文本。
+   * @param event - 服务端推送的单条 Agent 事件
+   */
+  function handleStreamEvent(event: AgentStreamEvent) {
+    if (event.type === "status") { setStatusText(event.message); return; }
+    if (event.type === "text_delta") {
+      patchStreamingMessage((message) => ({ ...message, text: message.text + event.text }));
+      return;
+    }
+    if (event.type === "tool_started") {
+      patchStreamingSteps((steps) => [...steps, { id: `${event.tool}-${steps.length}`, label: event.label ?? event.tool, status: "running" }]);
+      return;
+    }
+    if (event.type === "tool_completed") {
+      patchStreamingSteps((steps) => {
+        const next = [...steps];
+        const index = next.findLastIndex((step) => step.label === (event.label ?? event.tool) && step.status === "running");
+        const target = index >= 0 ? index : next.length - 1;
+        if (target >= 0 && next[target]) {
+          next[target] = {
+            ...next[target],
+            status: event.result.ok ? "done" : "failed",
+            summary: event.summary ?? (event.result.ok ? undefined : event.result.message),
+            detail: event.detail,
+          };
+        }
+        return next;
+      });
+      return;
+    }
+    if (event.type === "approval_required") {
+      patchStreamingSteps((steps) => {
+        if (steps.some((step) => step.status === "confirm" && step.label === "等待你确认")) return steps;
+        return [...steps, { id: `confirm-${steps.length}`, label: "等待你确认", status: "confirm", summary: "需要确认是否应用这份变更方案" }];
+      });
+    }
+  }
+
+  /**
+   * 触发"清空上下文"：更新本地时间戳，之后的消息才会进入 Agent 上下文。
+   * 注意：已有的消息仍然展示，只是不再装载到 Agent。
+   */
+  function handleClearContext() {
+    const ts = clearContext();
+    setContextClearedAt(ts);
+  }
+
+  async function applyChangeSet() {
+    if (!changeSet || !selectedOps.size) return;
+    setApplying(true); setError(null);
+    try {
+      await onApply(changeSet, [...selectedOps].sort((a, b) => a - b));
+      setChangeSet(null);
+      const ts = new Date().toISOString();
+      const assistantMsg: AgentMessage = { role: "assistant", text: "已按你的确认应用选中的草案内容。", timestamp: ts };
+      setMessages((items) => [...items, assistantMsg]);
+      appendMessages([{ id: crypto.randomUUID(), role: "assistant", text: assistantMsg.text, timestamp: ts }]);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "草案没有应用成功。"); }
+    finally { setApplying(false); }
+  }
+
+  async function rejectChangeSet() {
+    if (!changeSet) return;
+    setApplying(true); setError(null);
+    try {
+      await onReject(changeSet);
+      setChangeSet(null);
+      const ts = new Date().toISOString();
+      const assistantMsg: AgentMessage = { role: "assistant", text: "已记录拒绝。这份草案没有改变你的正式计划。", timestamp: ts };
+      setMessages((items) => [...items, assistantMsg]);
+      appendMessages([{ id: crypto.randomUUID(), role: "assistant", text: assistantMsg.text, timestamp: ts }]);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "没有成功记录拒绝。"); }
+    finally { setApplying(false); }
+  }
+
+  async function sendPrompt(prompt: string) {
+    if (!prompt.trim() || loading) return;
+
+    const userTs = new Date().toISOString();
+    const contextHistory = getContextMessages();
+    const scopedGoals = selectedGoalId ? goals.filter((goal) => goal.id === selectedGoalId) : goals;
+
+    setMessages((items) => [...items, { role: "user", text: prompt, timestamp: userTs }, { role: "assistant", text: "", streaming: true }]);
+    setMessage(""); setLoading(true); setError(null); setChangeSet(null); setStatusText("正在理解你的请求…");
+
+    appendMessages([{ id: crypto.randomUUID(), role: "user", text: prompt, timestamp: userTs }]);
+
+    try {
+      const result = await streamChatWithAgent(
+        {
+          prompt,
+          capability: inferCapability(prompt, view, selectedGoalId),
+          provider,
+          model: model || undefined,
+          messages: contextHistory,
+          business: {
+            goals: scopedGoals,
+            schedule,
+            executions: schedule.filter((item) => item.feedback),
+            today: currentDateKey(),
+            timezone: currentTimezone(),
+          },
+          page: { path: view, selectedEntityId: selectedGoalId ?? undefined },
+        },
+        handleStreamEvent,
+      );
+      const assistantTs = new Date().toISOString();
+      const finalText = result.text;
+      setMessages((items) => {
+        const next = [...items];
+        const last = next[next.length - 1];
+        if (last?.role === "assistant" && last.streaming) next[next.length - 1] = { role: "assistant", text: finalText || last.text, streaming: false, timestamp: assistantTs };
+        return next;
+      });
+      appendMessages([{ id: crypto.randomUUID(), role: "assistant", text: finalText, timestamp: assistantTs }]);
+      setChangeSet(result.changeSet);
+      setSelectedOps(new Set(result.changeSet?.operations.map((_, index) => index) ?? []));
+    } catch (caught) {
+      setMessages((items) => items.filter((item) => !item.streaming));
+      setError(caught instanceof Error ? caught.message : "小律暂时无法回应。");
+    } finally {
+      setLoading(false); setStatusText(null);
+    }
+  }
+
+  async function send(event: FormEvent) {
+    event.preventDefault();
+    await sendPrompt(message.trim());
+  }
+
+  // 区分"在上下文中"vs"上下文之外"的消息
+  const welcomeOnly = messages.length === 1 && messages[0]?.text === WELCOME_TEXT;
+
+  return (
+    <aside className={clsx("agent-panel", open && "open", expanded && "expanded")} aria-hidden={!open}>
+      <header>
+        <div className="agent-title">
+          <div className="agent-avatar"><Sparkles size={17} /></div>
+          <div><strong>小律</strong><small><i />{provider} · {model || "默认模型"}</small></div>
+        </div>
+        <div className="agent-header-actions">
+          {!welcomeOnly && <button className="icon-button" title="清空上下文（消息仍保留，但不再传给小律）" aria-label="清空对话上下文" onClick={handleClearContext}><RotateCcw size={15} /></button>}
+          <button className="icon-button" title={expanded ? "还原窗口" : "展开对话窗口"} aria-label={expanded ? "还原" : "展开"} onClick={() => setExpanded((v) => !v)}>{expanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>
+          <button className="icon-button" aria-label="关闭小律" onClick={onClose}><X size={19} /></button>
+        </div>
+      </header>
+      <div className="agent-context"><span><CalendarDays size={13} />{viewMeta[view].label}</span><span><Target size={13} />{selectedGoalId ? goals.find((goal) => goal.id === selectedGoalId)?.title ?? "已选目标" : `${goals.length} 个目标`}</span></div>
+      <div className="agent-messages">
+        {messages.map((item, index) => {
+          const isOutsideContext = contextClearedAt && item.timestamp && item.timestamp <= contextClearedAt;
+          // 在清空时间点处插入分隔线
+          const showDivider = contextClearedAt && index > 0 && (() => {
+            const prev = messages[index - 1];
+            return (prev?.timestamp ?? "") <= contextClearedAt && (!item.timestamp || item.timestamp > contextClearedAt);
+          })();
+          return (
+            <div key={index}>
+              {showDivider && <div className="context-divider"><span>以上不在上下文中</span></div>}
+              <div className={clsx("agent-turn", item.role)}>
+                <div className={clsx("agent-message", item.role, item.streaming && "streaming", isOutsideContext && "out-of-context")}>
+                  {item.role === "assistant"
+                    ? (item.streaming && !item.text
+                      ? <span className="agent-typing" aria-label="小律正在输入"><i /><i /><i /></span>
+                      : <>{progressStatus(item.text) && <span className={clsx("progress-evaluation", progressStatus(item.text))}>{progressStatusLabel(progressStatus(item.text)!)}</span>}<AgentMarkdown content={item.text} /></>)
+                    : item.text}
+                </div>
+                {item.role === "assistant" && (item.processSteps?.length ?? 0) > 0 && (
+                  <AgentProcessSteps
+                    steps={item.processSteps!}
+                    active={!!item.streaming}
+                    defaultCollapsed={!item.streaming && item.text.length > 180}
+                  />
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {loading && statusText && (
+          <div className="agent-activity">
+            <div className="agent-thinking"><i /><span>{statusText}</span></div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+      {error && <div className="agent-error">{error}<button onClick={() => setError(null)}>知道了</button></div>}
+      {changeSet && <div className="change-set-card"><span>变更草案 · {changeSet.riskLevel}</span><strong>{changeSet.title}</strong><p>{changeSet.reason}</p><button className="select-all" onClick={() => setSelectedOps(selectedOps.size === changeSet.operations.length ? new Set() : new Set(changeSet.operations.map((_, index) => index)))}>{selectedOps.size === changeSet.operations.length ? "取消全选" : "选择全部"}</button><div className="planning-tree">{changeSet.operations.map((operation, index) => <ChangeOperationPreview operation={operation} index={index} selected={selectedOps.has(index)} onToggle={() => setSelectedOps((current) => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next; })} goals={goals} schedule={schedule} key={index} />)}</div><div><button disabled={applying || !selectedOps.size} onClick={() => void applyChangeSet()}>{applying ? "应用中…" : `确认 ${selectedOps.size} 项`}</button><button disabled={applying} onClick={() => void rejectChangeSet()}>拒绝草案</button></div></div>}
+      <div className="agent-prompts">{selectedGoalId && (() => {
+        const goalTitle = goals.find((goal) => goal.id === selectedGoalId)?.title ?? "当前目标";
+        return (
+          <>
+            <button onClick={() => void sendPrompt(`请澄清「${goalTitle}」，先问我最关键的一个问题`)}>澄清目标</button>
+            <button onClick={() => void sendPrompt(`信息足够后，请把「${goalTitle}」拆成结构化规划草案`)}>拆解任务</button>
+          </>
+        );
+      })()}<button onClick={() => setMessage("帮我调整今晚的安排")}>调整今晚安排</button><button onClick={() => setMessage("基于真实执行生成本周回顾")}>AI 回顾</button></div>
+      <form className="agent-input" onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="告诉小律你想调整什么…" /><button aria-label="发送" disabled={loading}><Send size={17} /></button></form>
+      <p className="agent-boundary">涉及计划变更时，会先给你确认。</p>
+    </aside>
+  );
+}
+
+/** 字段的中文标签映射（不在此列表中的字段将被忽略） */
+const FIELD_LABELS: Record<string, string> = {
+  title: "名称", description: "描述", status: "状态",
+  startsAt: "开始时间", endsAt: "结束时间", start: "开始", end: "结束",
+  date: "日期", entityId: "对象", goalId: "关联目标", taskId: "关联任务", taskIds: "关联任务", routineId: "关联Routine",
+  estimatedMinutes: "预计时长(分)", durationMinutes: "执行时长(分)", targetMinutes: "执行时长(兼容旧字段)",
+  recurrenceRule: "重复规则", category: "分类", energyLevel: "精力",
+  focusLevel: "专注", intent: "任务意图",
+};
+
+/**
+ * 将字段值格式化为对用户友好的字符串。
+ * @param key - 字段名
+ * @param value - 字段原始值
+ * @param goals - 目标列表，用于解析 goalId
+ * @param schedule - 日程列表，用于解析 entityId
+ */
+function formatFieldValue(key: string, value: unknown, goals: Goal[], schedule: ScheduleItem[]): string {
+  return formatChangeOperationFieldValue(key, value, goals, schedule);
+}
+
+/**
+ * 比较 before/after，返回发生变化的字段列表及其可读描述。
+ * @param before - 变更前的字段快照
+ * @param after - 变更后的字段快照
+ * @param goals - 目标列表
+ * @param schedule - 日程列表
+ */
+function buildChangedFields(before: Record<string, unknown>, after: Record<string, unknown>, goals: Goal[], schedule: ScheduleItem[]) {
+  const changed: Array<{ label: string; from: string; to: string }> = [];
+  const allKeys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of allKeys) {
+    if (!FIELD_LABELS[key]) continue; // 不在展示字段白名单中
+    const beforeVal = before[key]; const afterVal = after[key];
+    if (String(beforeVal ?? "") === String(afterVal ?? "")) continue; // 未变化
+    changed.push({ label: FIELD_LABELS[key], from: formatFieldValue(key, beforeVal, goals, schedule), to: formatFieldValue(key, afterVal, goals, schedule) });
+  }
+  return changed;
+}
+
+function ChangeOperationPreview({ operation, index, selected, onToggle, goals, schedule }: { operation: Record<string, unknown>; index: number; selected: boolean; onToggle: () => void; goals: Goal[]; schedule: ScheduleItem[] }) {
+  const payload = (operation.payload ?? operation.after ?? {}) as Record<string, unknown>;
+  const before = (operation.before ?? {}) as Record<string, unknown>;
+  const label = resolveChangeOperationLabel(String(operation.entity ?? "item"), payload);
+  const displayTitle = resolveChangeOperationTitle(operation, goals, schedule, index);
+  const changedFields = operation.type === "update" ? buildChangedFields(before, payload, goals, schedule) : [];
+  const createFields = operation.type === "create" ? resolveChangeOperationFields(operation, goals, schedule) : [];
+
+  return (
+    <article className={clsx("change-operation", !selected && "unselected", `entity-${label}`)}>
+      <label>
+        <input type="checkbox" checked={selected} onChange={onToggle} />
+        <span>{label}</span>
+        <strong>{displayTitle}</strong>
+        <em className="op-type">{operation.type === "create" ? "新增" : operation.type === "update" ? "修改" : operation.type === "archive" ? "归档" : String(operation.type)}</em>
+      </label>
+      {changedFields.length > 0 && (
+        <ul className="field-diff">
+          {changedFields.map((field) => (
+            <li key={field.label}>
+              <span className="diff-label">{field.label}</span>
+              <span className="diff-from">{field.from}</span>
+              <ArrowRight size={10} />
+              <span className="diff-to">{field.to}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {createFields.length > 0 && (
+        <ul className="field-create">
+          {createFields.map((field) => (
+            <li key={field.label}><span className="diff-label">{field.label}</span><span>{field.value}</span></li>
+          ))}
+        </ul>
+      )}
+      {Array.isArray(payload.completionCriteria) && <ul className="criteria-list">{payload.completionCriteria.slice(0, 3).map((item) => <li key={String(item)}>{String(item)}</li>)}</ul>}
+    </article>
+  );
+}
+
+function ModalShell({ title, caption, onClose, children }: { title: string; caption: string; onClose: () => void; children: React.ReactNode }) {
+  return <div className="modal-layer"><button className="modal-scrim" onClick={onClose} aria-label="关闭" /><section className="modal-card"><header><div><span className="section-kicker">手动编辑</span><h2>{title}</h2><p>{caption}</p></div><button className="icon-button" aria-label="关闭弹窗" onClick={onClose}><X size={19} /></button></header>{children}</section></div>;
+}
+
+function GoalModal({ onClose, onSave }: { onClose: () => void; onSave: (goal: Goal) => void }) {
+  const [title, setTitle] = useState(""); const [description, setDescription] = useState("");
+  const [category, setCategory] = useState<Goal["category"]>("mixed"); const [project, setProject] = useState(""); const [skill, setSkill] = useState(""); const [targetDate, setTargetDate] = useState("");
+  function submit(event: FormEvent) { event.preventDefault(); if (!title.trim()) return; onSave({ id: crypto.randomUUID(), title: title.trim(), description: description.trim(), category, project: project.trim(), skill: skill.trim(), targetDate: targetDate ? zonedDateTimeToIso(targetDate, "23:59", currentTimezone()) : undefined, status: "draft", color: "coral", weeklyMinutes: 0, completedMinutes: 0, tasksDone: 0, tasksTotal: 0 }); }
+  return <ModalShell title="写下一个新目标" caption="目标保存方向与期限；项目、能力用独立字段表达，之后仍可修改。" onClose={onClose}><form className="form-stack" onSubmit={submit}><label>目标名称<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：完成一个可用的产品 MVP" required /></label><label>为什么这件事重要<textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="它会给你的生活带来什么变化？" rows={4} /></label><div className="field-row"><label>目标类型<select value={category} onChange={(e) => setCategory(e.target.value as Goal["category"])}><option value="project">项目型</option><option value="skill">能力型</option><option value="routine">Routine 型</option><option value="mixed">混合型</option></select></label><label>目标日期（可选）<input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} /></label></div>{(category === "project" || category === "mixed") && <label>关联项目<input value={project} onChange={(e) => setProject(e.target.value)} placeholder="例如：Rhythm & Routine MVP" /></label>}{(category === "skill" || category === "routine" || category === "mixed") && <label>关联能力<input value={skill} onChange={(e) => setSkill(e.target.value)} placeholder="例如：产品设计、英语口语" /></label>}<div className="form-note"><Sparkles size={16} /><span>成功标准请继续用结果指标表达，不必塞进目标说明。</span></div><div className="form-actions"><button type="button" className="soft-button" onClick={onClose}>取消</button><button className="primary-button">保存目标</button></div></form></ModalShell>;
+}
+
+type TaskFormPatch = {
+  title: string;
+  intent?: string;
+  completionCriteria?: string[];
+  suggestedSteps?: string[];
+  rhythmConditions?: string[];
+  estimatedMinutes?: number;
+  energyLevel?: string;
+  focusLevel?: string;
+  milestoneId?: string;
+};
+
+/**
+ * 任务创建/编辑弹窗，支持填写意图、完成标准与节奏条件。
+ * @param mode - create 新建，edit 编辑已有任务
+ * @param goal - 所属目标（用于里程碑选项）
+ * @param task - 编辑模式下的任务数据
+ * @param dataMode - 数据模式
+ * @param onClose - 关闭回调
+ * @param onSave - 保存回调
+ * @param onDelete - 编辑模式下的删除回调
+ */
+function TaskFormModal({ mode, goal, task, dataMode, onClose, onSave, onDelete }: {
+  mode: "create" | "edit";
+  goal: Goal;
+  task?: NonNullable<Goal["tasks"]>[number];
+  dataMode: "checking" | "database" | "local";
+  onClose: () => void;
+  onSave: (patch: TaskFormPatch) => Promise<void>;
+  onDelete?: () => Promise<void>;
+}) {
+  const [title, setTitle] = useState(task?.title ?? "");
+  const [intent, setIntent] = useState(task?.intent ?? "");
+  const [criteria, setCriteria] = useState((task?.completionCriteria ?? []).join("\n"));
+  const [steps, setSteps] = useState((task?.suggestedSteps ?? []).join("\n"));
+  const [rhythm, setRhythm] = useState(rhythmConditionLabels(task?.rhythmConditions).join("\n"));
+  const [minutes, setMinutes] = useState(task?.estimatedMinutes ?? 45);
+  const [energy, setEnergy] = useState(task?.energyLevel ?? "medium");
+  const [focus, setFocus] = useState(task?.focusLevel ?? "medium");
+  const [milestoneId, setMilestoneId] = useState(task?.milestoneId ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /**
+   * 提交表单，将多行文本字段拆分为数组后保存。
+   * @param event - 表单提交事件
+   */
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!title.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onSave({
+        title: title.trim(),
+        intent: intent.trim(),
+        completionCriteria: lines(criteria),
+        suggestedSteps: lines(steps),
+        rhythmConditions: lines(rhythm),
+        estimatedMinutes: minutes,
+        energyLevel: energy,
+        focusLevel: focus,
+        milestoneId: milestoneId || undefined,
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "保存没有完成。");
+      setBusy(false);
+    }
+  }
+
+  /**
+   * 确认后删除任务。
+   */
+  async function handleDelete() {
+    if (!onDelete || !task) return;
+    if (!window.confirm(`确定删除任务「${task.title}」？关联日程仍会保留在历史中。`)) return;
+    setBusy(true);
+    setError(null);
+    try { await onDelete(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "删除没有完成。"); setBusy(false); }
+  }
+
+  return (
+    <ModalShell
+      title={mode === "create" ? "新建任务" : "编辑任务"}
+      caption={`${dataMode === "database" ? "已连接数据库" : "本地模式"} · 所属目标：${goal.title}`}
+      onClose={onClose}
+    >
+      <form className="form-stack task-form-modal" onSubmit={(event) => void submit(event)}>
+        <label>任务名称<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="一件清楚、可以开始的事" required /></label>
+        <label>任务意图<textarea rows={2} value={intent} onChange={(event) => setIntent(event.target.value)} placeholder="这件事为什么能推动目标？" /></label>
+        <label>完成标准<textarea rows={3} value={criteria} onChange={(event) => setCriteria(event.target.value)} placeholder="每行一条可验收结果" /></label>
+        <label>建议步骤<textarea rows={3} value={steps} onChange={(event) => setSteps(event.target.value)} placeholder="每行一步" /></label>
+        <label>适合的节奏条件<textarea rows={2} value={rhythm} onChange={(event) => setRhythm(event.target.value)} placeholder="每行一条，例如：上午、安静环境" /></label>
+        {goal.milestones?.length ? (
+          <label>关联里程碑
+            <select value={milestoneId} onChange={(event) => setMilestoneId(event.target.value)}>
+              <option value="">不关联里程碑</option>
+              {goal.milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.title}</option>)}
+            </select>
+          </label>
+        ) : null}
+        <div className="field-row">
+          <label>预计分钟<input type="number" min={5} max={1440} value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} /></label>
+          <label>所需精力<select value={energy} onChange={(event) => setEnergy(event.target.value)}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+          <label>专注度<select value={focus} onChange={(event) => setFocus(event.target.value)}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+        </div>
+        {error && <p className="form-error">{error}</p>}
+        <div className="form-actions spread">
+          {mode === "edit" && onDelete ? <button type="button" className="danger-button" disabled={busy} onClick={() => void handleDelete()}>删除任务</button> : <span />}
+          <div>
+            <button type="button" className="soft-button" onClick={onClose}>取消</button>
+            <button className="primary-button" disabled={busy || !title.trim()}>{busy ? "保存中…" : mode === "create" ? "创建任务" : "保存修改"}</button>
+          </div>
+        </div>
+      </form>
+    </ModalShell>
+  );
+}
+
+function GoalDetailModal({ goal, dataMode, onClose, onChanged, onLocalChange, onLocalArchive, onNotice }: {
+  goal: Goal; dataMode: "checking" | "database" | "local"; onClose: () => void; onChanged: () => Promise<void>;
+  onLocalChange: (goal: Goal) => void; onLocalArchive: () => void; onNotice: (message: string) => void;
+}) {
+  const [title, setTitle] = useState(goal.title);
+  const [description, setDescription] = useState(goal.description);
+  const [category, setCategory] = useState(goal.category ?? "mixed"); const [project, setProject] = useState(goal.project ?? ""); const [skill, setSkill] = useState(goal.skill ?? "");
+  const [targetDate, setTargetDate] = useState(dateInputInTimezone(goal.targetDate, currentTimezone()));
+  const [outcomeText, setOutcomeText] = useState("");
+  const [milestoneTitle, setMilestoneTitle] = useState("");
+  const [taskTitle, setTaskTitle] = useState("");
+  const [routineTitle, setRoutineTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(action: () => Promise<void>, success: string) {
+    setBusy(true); setError(null);
+    try { await action(); onNotice(success); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "操作没有完成。"); }
+    finally { setBusy(false); }
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    await run(async () => {
+      const normalizedTargetDate = targetDate ? zonedDateTimeToIso(targetDate, "23:59", currentTimezone()) : null;
+      if (dataMode === "database" && goal.version) { await workspaceApi.updateGoal(goal.id, { title, description, category, project, skill, targetDate: normalizedTargetDate, expectedVersion: goal.version }); await onChanged(); }
+      else onLocalChange({ ...goal, title, description, category: category as Goal["category"], project, skill, targetDate: normalizedTargetDate ?? undefined });
+    }, "目标已保存");
+  }
+
+  async function addTask() {
+    if (!taskTitle.trim()) return;
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.createTask(goal.id, { title: taskTitle, estimatedMinutes: 45 }); await onChanged(); }
+      else { const task = { id: crypto.randomUUID(), title: taskTitle, status: "ready", version: 1, estimatedMinutes: 45 }; onLocalChange({ ...goal, tasks: [...(goal.tasks ?? []), task], tasksTotal: goal.tasksTotal + 1 }); }
+      setTaskTitle("");
+    }, "任务已添加");
+  }
+
+  async function addOutcome() {
+    if (!outcomeText.trim()) return;
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.createOutcome(goal.id, outcomeText); await onChanged(); }
+      else onLocalChange({ ...goal, outcomes: [...(goal.outcomes ?? []), { id: crypto.randomUUID(), description: outcomeText, completedAt: null, version: 1 }] });
+      setOutcomeText("");
+    }, "结果指标已添加");
+  }
+
+  async function saveOutcome(outcome: NonNullable<Goal["outcomes"]>[number], nextDescription: string, completed = Boolean(outcome.completedAt)) {
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.updateOutcome(outcome.id, { description: nextDescription, completed, expectedVersion: outcome.version }); await onChanged(); }
+      else onLocalChange({ ...goal, outcomes: (goal.outcomes ?? []).map((item) => item.id === outcome.id ? { ...item, description: nextDescription, completedAt: completed ? new Date().toISOString() : null, version: item.version + 1 } : item) });
+    }, completed ? "结果指标已由你确认完成" : "结果指标已保存");
+  }
+
+  async function removeOutcome(outcome: NonNullable<Goal["outcomes"]>[number]) {
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.deleteOutcome(outcome.id, outcome.version); await onChanged(); }
+      else onLocalChange({ ...goal, outcomes: (goal.outcomes ?? []).filter((item) => item.id !== outcome.id) });
+    }, "结果指标已删除");
+  }
+
+  async function addMilestone() {
+    if (!milestoneTitle.trim()) return;
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.createMilestone(goal.id, { title: milestoneTitle }); await onChanged(); }
+      else onLocalChange({ ...goal, milestones: [...(goal.milestones ?? []), { id: crypto.randomUUID(), title: milestoneTitle, status: "pending", version: 1 }] });
+      setMilestoneTitle("");
+    }, "里程碑已添加");
+  }
+
+  async function saveMilestone(milestone: NonNullable<Goal["milestones"]>[number], nextTitle: string, status = milestone.status) {
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.updateMilestone(milestone.id, { title: nextTitle, status, expectedVersion: milestone.version }); await onChanged(); }
+      else onLocalChange({ ...goal, milestones: (goal.milestones ?? []).map((item) => item.id === milestone.id ? { ...item, title: nextTitle, status, version: item.version + 1 } : item) });
+    }, status === "completed" ? "里程碑已由你确认完成" : "里程碑已保存");
+  }
+
+  async function archiveMilestone(milestone: NonNullable<Goal["milestones"]>[number]) {
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.archiveMilestone(milestone.id, milestone.version); await onChanged(); }
+      else onLocalChange({ ...goal, milestones: (goal.milestones ?? []).filter((item) => item.id !== milestone.id) });
+    }, "里程碑已归档");
+  }
+
+  async function addRoutine() {
+    if (!routineTitle.trim()) return;
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.createRoutine(goal.id, { title: routineTitle, recurrenceRule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0", startDate: zonedDateTimeToIso(currentDateKey(), "00:00", currentTimezone()), preferredStartTime: "09:00", durationMinutes: 20 }); await onChanged(); }
+      else { const routine = { id: crypto.randomUUID(), title: routineTitle, status: "active", version: 1, recurrenceRule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0", startDate: new Date().toISOString(), preferredStartTime: "09:00", durationMinutes: 20, displayMode: "subtle", executionRecords: [] }; onLocalChange({ ...goal, routines: [...(goal.routines ?? []), routine] }); }
+      setRoutineTitle("");
+    }, "Routine 已添加");
+  }
+
+  async function saveTask(task: NonNullable<Goal["tasks"]>[number], patch: Partial<NonNullable<Goal["tasks"]>[number]>) {
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.updateTask(task.id, { title: patch.title, intent: patch.intent ?? undefined, completionCriteria: patch.completionCriteria ?? undefined, suggestedSteps: patch.suggestedSteps ?? undefined, estimatedMinutes: patch.estimatedMinutes ?? undefined, energyLevel: patch.energyLevel ?? undefined, focusLevel: patch.focusLevel ?? undefined, rhythmConditions: patch.rhythmConditions == null ? undefined : rhythmConditionLabels(patch.rhythmConditions), milestoneId: patch.milestoneId ?? undefined, expectedVersion: task.version }); await onChanged(); }
+      else onLocalChange({ ...goal, tasks: (goal.tasks ?? []).map((item) => item.id === task.id ? { ...item, ...patch, version: item.version + 1 } : item) });
+    }, "任务已保存");
+  }
+
+  async function archiveTask(task: NonNullable<Goal["tasks"]>[number]) {
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.archiveTask(task.id, task.version); await onChanged(); }
+      else onLocalChange({ ...goal, tasks: (goal.tasks ?? []).filter((item) => item.id !== task.id), tasksTotal: Math.max(0, goal.tasksTotal - 1), tasksDone: task.status === "completed" ? Math.max(0, goal.tasksDone - 1) : goal.tasksDone });
+    }, "任务已归档");
+  }
+
+  async function saveRoutine(routine: NonNullable<Goal["routines"]>[number], patch: { title: string; recurrenceRule: string; durationMinutes: number; minimumVersion?: string }) {
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.updateRoutine(routine.id, { ...patch, expectedVersion: routine.version }); await onChanged(); }
+      else onLocalChange({ ...goal, routines: (goal.routines ?? []).map((item) => item.id === routine.id ? { ...item, ...patch, version: item.version + 1 } : item) });
+    }, "Routine 已保存");
+  }
+
+  async function archiveRoutine(routine: NonNullable<Goal["routines"]>[number]) {
+    await run(async () => {
+      if (dataMode === "database") { await workspaceApi.archiveRoutine(routine.id, routine.version); await onChanged(); }
+      else onLocalChange({ ...goal, routines: (goal.routines ?? []).filter((item) => item.id !== routine.id) });
+    }, "Routine 已归档");
+  }
+
+  async function archive() {
+    await run(async () => {
+      if (dataMode === "database" && goal.version) { await workspaceApi.archiveGoal(goal.id, goal.version); await onChanged(); onClose(); }
+      else onLocalArchive();
+    }, "目标已归档");
+  }
+
+  return <ModalShell title="目标详情" caption="手动编辑始终可用；AI 只是帮你形成建议。" onClose={onClose}>
+    <form className="form-stack" onSubmit={save}>
+      <label>目标名称<input value={title} onChange={(event) => setTitle(event.target.value)} required /></label>
+      <label>目标说明<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} /></label>
+      <div className="field-row"><label>目标类型<select value={category} onChange={(event) => setCategory(event.target.value as NonNullable<Goal["category"]>)}><option value="project">项目</option><option value="skill">能力</option><option value="routine">习惯</option><option value="mixed">混合</option></select></label><label>目标日期（可选）<input type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} /></label></div>{(category === "project" || category === "mixed") && <label>所属项目<input value={project} onChange={(event) => setProject(event.target.value)} placeholder="可选" /></label>}{(category === "skill" || category === "routine" || category === "mixed") && <label>重点能力<input value={skill} onChange={(event) => setSkill(event.target.value)} placeholder="例如：产品设计、英语表达" /></label>}
+      <div className="detail-section"><div className="detail-heading"><strong>结果指标</strong><span>{goal.outcomes?.length ?? 0} 个</span></div>
+        <div className="mini-list">{goal.outcomes?.map((outcome) => <OutcomeRow key={outcome.id} outcome={outcome} disabled={busy} onSave={(next, completed) => saveOutcome(outcome, next, completed)} onDelete={() => removeOutcome(outcome)} />)}{!goal.outcomes?.length && <p>写下什么变化代表这个目标真正达成。</p>}</div>
+        <div className="inline-create"><input value={outcomeText} onChange={(event) => setOutcomeText(event.target.value)} placeholder="添加结果指标" /><button type="button" aria-label="确认添加结果指标" onClick={addOutcome} disabled={busy}><Plus size={16} /></button></div>
+      </div>
+      <div className="detail-section"><div className="detail-heading"><strong>里程碑</strong><span>{goal.milestones?.length ?? 0} 个</span></div>
+        <div className="mini-list">{goal.milestones?.map((milestone) => <MilestoneRow key={milestone.id} milestone={milestone} disabled={busy} onSave={(next, status) => saveMilestone(milestone, next, status)} onArchive={() => archiveMilestone(milestone)} />)}{!goal.milestones?.length && <p>用阶段节点看见自己正在靠近目标。</p>}</div>
+        <div className="inline-create"><input value={milestoneTitle} onChange={(event) => setMilestoneTitle(event.target.value)} placeholder="添加里程碑" /><button type="button" aria-label="确认添加里程碑" onClick={addMilestone} disabled={busy}><Plus size={16} /></button></div>
+      </div>
+      <div className="detail-section"><div className="detail-heading"><strong>行动任务</strong><span>{goal.tasks?.length ?? 0} 个</span></div>
+        <div className="mini-list task-detail-list">{goal.tasks?.map((task) => <TaskEditorRow key={task.id} task={task} disabled={busy} onSave={(patch) => saveTask(task, patch)} onArchive={() => archiveTask(task)} />)}{!goal.tasks?.length && <p>还没有任务。先添加一个能够开始的动作。</p>}</div>
+        <div className="inline-create"><input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder="添加一个任务" /><button type="button" aria-label="确认添加任务" onClick={addTask} disabled={busy}><Plus size={16} /></button></div>
+      </div>
+      <div className="detail-section"><div className="detail-heading"><strong>Routine</strong><span>{goal.routines?.length ?? 0} 个</span></div>
+        <div className="mini-list task-detail-list">{goal.routines?.map((routine) => <RoutineEditorRow key={routine.id} routine={routine} disabled={busy} onSave={(patch) => saveRoutine(routine, patch)} onArchive={() => archiveRoutine(routine)} />)}{!goal.routines?.length && <p>还没有 Routine。适合持续重复的行动可以放在这里。</p>}</div>
+        <div className="inline-create"><input value={routineTitle} onChange={(event) => setRoutineTitle(event.target.value)} placeholder="添加一个 Routine" /><button type="button" aria-label="确认添加 Routine" onClick={addRoutine} disabled={busy}><Plus size={16} /></button></div>
+      </div>
+      {error && <p className="form-error">{error}</p>}
+      <div className="form-actions spread"><button type="button" className="danger-button" onClick={archive} disabled={busy}>归档目标</button><div><button type="button" className="soft-button" onClick={onClose}>关闭</button><button className="primary-button" disabled={busy}>{busy ? "保存中…" : "保存修改"}</button></div></div>
+    </form>
+  </ModalShell>;
+}
+
+function RoutineEditorRow({ routine, disabled, onSave, onArchive }: { routine: NonNullable<Goal["routines"]>[number]; disabled: boolean; onSave: (patch: { title: string; recurrenceRule: string; durationMinutes: number; minimumVersion?: string }) => Promise<void>; onArchive: () => Promise<void> }) {
+  const [title, setTitle] = useState(routine.title); const [rule, setRule] = useState(routine.recurrenceRule); const [minutes, setMinutes] = useState(routine.durationMinutes ?? 20); const [minimum, setMinimum] = useState(routine.minimumVersion ?? "");
+  return <details className="task-editor"><summary><RefreshCcw size={14} /><span>{routine.title}</span><em>{routine.durationMinutes ? `${routine.durationMinutes}m` : "重复"}</em><ChevronRight size={14} /></summary><div><label>Routine 名称<input value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>重复规则<select value={presetRule(rule)} onChange={(event) => setRule(event.target.value === "custom" ? rule : event.target.value)}><option value="FREQ=DAILY">每天</option><option value="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR">工作日</option><option value="FREQ=WEEKLY;BYDAY=SA,SU">周末</option><option value="custom">自定义 RRULE</option></select></label><label>RRULE<input value={rule} onChange={(event) => setRule(event.target.value)} placeholder="FREQ=WEEKLY;BYDAY=TU,SA;BYHOUR=19" /></label><div className="field-row"><label>执行分钟<input type="number" min="1" max="1440" value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} /></label><label>最低版本<input value={minimum} onChange={(event) => setMinimum(event.target.value)} placeholder="例如：只做 5 分钟" /></label></div><div className="task-editor-actions"><button type="button" className="archive-mini" disabled={disabled} onClick={() => void onArchive()}>归档 Routine</button><button type="button" disabled={disabled || !title.trim() || !rule.trim()} onClick={() => void onSave({ title: title.trim(), recurrenceRule: rule.trim(), durationMinutes: minutes, minimumVersion: minimum.trim() || undefined })}>保存 Routine</button></div></div></details>;
+}
+
+function TaskEditorRow({ task, disabled, onSave, onArchive }: { task: NonNullable<Goal["tasks"]>[number]; disabled: boolean; onSave: (patch: Partial<NonNullable<Goal["tasks"]>[number]>) => Promise<void>; onArchive: () => Promise<void> }) {
+  const [title, setTitle] = useState(task.title); const [intent, setIntent] = useState(task.intent ?? ""); const [criteria, setCriteria] = useState((task.completionCriteria ?? []).join("\n")); const [steps, setSteps] = useState((task.suggestedSteps ?? []).join("\n")); const [rhythm, setRhythm] = useState(rhythmConditionLabels(task.rhythmConditions).join("\n")); const [minutes, setMinutes] = useState(task.estimatedMinutes ?? 45); const [energy, setEnergy] = useState(task.energyLevel ?? "medium"); const [focus, setFocus] = useState(task.focusLevel ?? "medium");
+  return <details className="task-editor"><summary><Check size={14} /><span>{task.title}</span><em>{task.estimatedMinutes ? `${task.estimatedMinutes}m` : task.status}</em><ChevronRight size={14} /></summary><div><label>任务名称<input value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>任务意图<textarea rows={2} value={intent} onChange={(event) => setIntent(event.target.value)} placeholder="这件事为什么能推动目标？" /></label><label>完成标准<textarea rows={3} value={criteria} onChange={(event) => setCriteria(event.target.value)} placeholder="每行一条" /></label><label>建议步骤<textarea rows={3} value={steps} onChange={(event) => setSteps(event.target.value)} placeholder="每行一步" /></label><label>适合的节奏条件<textarea rows={2} value={rhythm} onChange={(event) => setRhythm(event.target.value)} placeholder="每行一条，例如：上午、安静环境、精力充足" /></label><div className="field-row"><label>预计分钟<input type="number" min="5" max="1440" value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} /></label><label>所需精力<select value={energy} onChange={(event) => setEnergy(event.target.value)}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label><label>专注度<select value={focus} onChange={(event) => setFocus(event.target.value)}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label></div><div className="task-editor-actions"><button type="button" className="archive-mini" disabled={disabled} onClick={() => void onArchive()}>归档任务</button><button type="button" disabled={disabled || !title.trim()} onClick={() => void onSave({ title: title.trim(), intent, completionCriteria: lines(criteria), suggestedSteps: lines(steps), rhythmConditions: lines(rhythm), estimatedMinutes: minutes, energyLevel: energy, focusLevel: focus })}>保存任务详情</button></div></div></details>;
+}
+
+function OutcomeRow({ outcome, disabled, onSave, onDelete }: { outcome: NonNullable<Goal["outcomes"]>[number]; disabled: boolean; onSave: (description: string, completed: boolean) => Promise<void>; onDelete: () => Promise<void> }) {
+  const [value, setValue] = useState(outcome.description);
+  const completed = Boolean(outcome.completedAt);
+  return <div className={clsx("editable-work-item", completed && "confirmed-item")}><Target size={14} /><input aria-label={`编辑结果指标 ${outcome.description}`} value={value} onChange={(event) => setValue(event.target.value)} /><em>{completed ? "已确认" : "待确认"}</em><button type="button" disabled={disabled} onClick={() => void onSave(value.trim(), !completed)}>{completed ? "撤销确认" : "确认完成"}</button><button type="button" className="archive-mini" disabled={disabled} onClick={() => void onDelete()}>删除</button></div>;
+}
+
+function MilestoneRow({ milestone, disabled, onSave, onArchive }: { milestone: NonNullable<Goal["milestones"]>[number]; disabled: boolean; onSave: (title: string, status: string) => Promise<void>; onArchive: () => Promise<void> }) {
+  const [value, setValue] = useState(milestone.title);
+  const completed = milestone.status === "completed";
+  return <div className={clsx("editable-work-item", completed && "confirmed-item")}><Flag size={14} /><input aria-label={`编辑里程碑 ${milestone.title}`} value={value} onChange={(event) => setValue(event.target.value)} /><em>{completed ? "已完成" : milestone.status === "ready_for_review" ? "待你确认" : "推进中"}</em><button type="button" disabled={disabled} onClick={() => void onSave(value.trim(), completed ? "pending" : "completed")}>{completed ? "撤销确认" : "确认完成"}</button><button type="button" className="archive-mini" disabled={disabled} onClick={() => void onArchive()}>归档</button></div>;
+}
+
+function TaskMultiSelect({ choices, value, onChange, disabled }: { choices: Array<{ id: string; title: string }>; value: string[]; onChange: (taskIds: string[]) => void; disabled?: boolean }) {
+  const groupId = useId();
+
+  /**
+   * 切换某个任务的选中状态。
+   * @param taskId - 被点击的任务 ID
+   */
+  function toggleTask(taskId: string) {
+    if (disabled) return;
+    if (value.includes(taskId)) onChange(value.filter((id) => id !== taskId));
+    else onChange([...value, taskId]);
+  }
+
+  return (
+    <div className="task-multi-select" role="group" aria-label="关联任务">
+      {choices.map((choice) => {
+        const inputId = `${groupId}-${choice.id}`;
+        const checked = value.includes(choice.id);
+        return (
+          <div key={choice.id} className="task-multi-option" onClick={() => toggleTask(choice.id)}>
+            <input id={inputId} type="checkbox" checked={checked} onChange={() => toggleTask(choice.id)} disabled={disabled} onClick={(event) => event.stopPropagation()} />
+            <span>{choice.title}</span>
+          </div>
+        );
+      })}
+      {!choices.length && <p className="task-multi-empty">该目标下还没有任务，可先在目标详情中创建。</p>}
+    </div>
+  );
+}
+
+function ScheduleModal({ goals, initialSelection, onClose, onSave }: { goals: Goal[]; initialSelection?: ScheduleTimeSeed; onClose: () => void; onSave: (item: ScheduleItem) => void }) {
+  const initialGoalId = initialSelection?.goalId ?? goals[0]?.id ?? "";
+  const initialGoal = goals.find((item) => item.id === initialGoalId);
+  const arrangingRoutine = Boolean(initialSelection?.routineId);
+  const initialRoutine = initialGoal?.routines?.find((item) => item.id === initialSelection?.routineId);
+  const initialTaskIds = initialSelection?.taskId ? [initialSelection.taskId] : [];
+  const initialTitle = initialGoal?.tasks?.find((item) => item.id === initialSelection?.taskId)?.title ?? initialRoutine?.title ?? "";
+  const [goalId, setGoalId] = useState(initialGoalId);
+  const goal = goals.find((item) => item.id === goalId);
+  const taskChoices = (goal?.tasks ?? []).map((item) => ({ id: item.id, title: item.title }));
+  const [taskIds, setTaskIds] = useState(initialTaskIds);
+  const [title, setTitle] = useState(initialTitle);
+  const [date, setDate] = useState(initialSelection?.date ?? currentDateKey());
+  const [start, setStart] = useState(initialSelection?.start ?? "16:00");
+  const [end, setEnd] = useState(initialSelection?.end ?? (initialSelection?.start ? formatClock(parseClock(initialSelection.start) + 60) : "17:00"));
+
+  /**
+   * 更新关联任务列表，并在只选中一个任务时同步标题。
+   * @param nextTaskIds - 新的任务 ID 列表
+   */
+  function updateTaskIds(nextTaskIds: string[]) {
+    setTaskIds(nextTaskIds);
+    const onlyTask = nextTaskIds.length === 1 ? taskChoices.find((item) => item.id === nextTaskIds[0]) : null;
+    if (onlyTask) setTitle(onlyTask.title);
+  }
+
+  /**
+   * 提交新建日程：Routine 入口保留 routine 关联，同时可关联多个任务。
+   * @param event - 表单提交事件
+   */
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!title.trim()) return;
+    onSave({
+      id: crypto.randomUUID(),
+      title,
+      goalId,
+      date,
+      start,
+      end,
+      taskId: taskIds[0],
+      taskIds: taskIds.length ? taskIds : undefined,
+      routineId: arrangingRoutine ? initialSelection?.routineId : undefined,
+      kind: arrangingRoutine ? "routine" : "task",
+      status: "planned",
+      energy: "medium",
+    });
+  }
+
+  return (
+    <ModalShell title="安排到日历" caption={arrangingRoutine ? "为 Routine 额外安排一次时间；可同时关联多个任务，完成后会写入各任务的执行历史。" : "手动添加的日程可关联多个任务；Routine 会按重复规则自动出现在日历。"} onClose={onClose}>
+      <form className="form-stack" onSubmit={submit}>
+        <label>关联目标<select value={goalId} onChange={(event) => { setGoalId(event.target.value); setTaskIds([]); setTitle(""); }} disabled={arrangingRoutine}>{goals.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+        {arrangingRoutine && (
+          <label>来源 Routine<input value={initialRoutine?.title ?? "Routine"} readOnly /></label>
+        )}
+        <div className="form-field">
+          <span className="form-field-label">关联任务（可多选）</span>
+          <TaskMultiSelect choices={taskChoices} value={taskIds} onChange={updateTaskIds} />
+        </div>
+        <label>要做什么<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="一件清楚、可以开始的事" required /></label>
+        <label>日期<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+        <div className="field-row"><label>开始<input type="time" value={start} onChange={(event) => setStart(event.target.value)} /></label><label>结束<input type="time" value={end} onChange={(event) => setEnd(event.target.value)} /></label></div>
+        <div className="form-actions"><button type="button" className="soft-button" onClick={onClose}>取消</button><button className="primary-button">加入日程</button></div>
+      </form>
+    </ModalShell>
+  );
+}
+
+function ScheduleEditModal({ item, dataMode, goals, onClose, onSave, onDelete }: {
+  item: ScheduleItem; dataMode: "checking" | "database" | "local"; goals: Goal[];
+  onClose: () => void; onSave: (item: ScheduleItem, reason: string) => Promise<void>; onDelete: () => Promise<void>;
+}) {
+  const [title, setTitle] = useState(item.title);
+  const [date, setDate] = useState(item.date ?? currentDateKey());
+  const [start, setStart] = useState(item.start);
+  const [end, setEnd] = useState(item.end);
+  const [reason, setReason] = useState(item.changeReason ?? "");
+  const [goalId, setGoalId] = useState(item.goalId ?? "");
+  const [taskIds, setTaskIds] = useState(() => resolveScheduleTaskIds(item));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const selectedGoal = goals.find((g) => g.id === goalId);
+  const taskChoices = (selectedGoal?.tasks ?? []).map((t) => ({ id: t.id, title: t.title }));
+  const linkedRoutine = selectedGoal?.routines?.find((r) => r.id === item.routineId);
+
+  /**
+   * 切换关联目标时清空已选任务。
+   * @param nextGoalId - 新选中的目标 ID
+   */
+  function handleGoalChange(nextGoalId: string) {
+    setGoalId(nextGoalId);
+    setTaskIds([]);
+  }
+
+  /**
+   * 封装异步操作，统一处理 busy + error 状态。
+   * @param action - 要执行的异步操作
+   */
+  async function execute(action: () => Promise<void>) {
+    setBusy(true); setError(null);
+    try { await action(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "操作没有完成。"); }
+    finally { setBusy(false); }
+  }
+
+  /**
+   * 组装编辑后的日程块，保留 Routine 来源并写入多任务关联。
+   */
+  function buildUpdatedItem(): ScheduleItem {
+    return {
+      ...item, title, date, start, end,
+      goalId: goalId || item.goalId,
+      taskId: taskIds[0],
+      taskIds: taskIds.length ? taskIds : undefined,
+      routineId: item.routineId,
+      kind: item.routineId ? "routine" : "task",
+    };
+  }
+
+  return (
+    <ModalShell title="移动或编辑日程" caption={`${dataMode === "database" ? "数据库已连接" : "本地模式"} · 改期会保留原时间和原因`} onClose={onClose}>
+      <form className="form-stack" onSubmit={(event) => { event.preventDefault(); void execute(() => onSave(buildUpdatedItem(), reason)); }}>
+        <label>名称<input value={title} onChange={(event) => setTitle(event.target.value)} required /></label>
+        <label>关联目标
+          <select value={goalId} onChange={(event) => handleGoalChange(event.target.value)}>
+            <option value="">不关联目标</option>
+            {goals.map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+          </select>
+        </label>
+        {goalId && item.routineId && linkedRoutine && (
+          <label>来源 Routine<input value={linkedRoutine.title} readOnly /></label>
+        )}
+        {goalId && (
+          <div className="form-field">
+            <span className="form-field-label">关联任务（可多选）</span>
+            <TaskMultiSelect choices={taskChoices} value={taskIds} onChange={setTaskIds} disabled={busy} />
+          </div>
+        )}
+        <label>日期<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+        <div className="field-row">
+          <label>开始<input type="time" value={start} onChange={(event) => setStart(event.target.value)} /></label>
+          <label>结束<input type="time" value={end} onChange={(event) => setEnd(event.target.value)} /></label>
+        </div>
+        <label>移动或改期原因<textarea rows={2} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="例如：上午临时会议，移到精力更合适的时段" /></label>
+        {item.rescheduledFromId && <div className="form-note"><RefreshCcw size={16} /><span>这是一次改期后的安排，原日程仍保留在历史中。</span></div>}
+        {error && <p className="form-error">{error}</p>}
+        <div className="form-actions spread">
+          <button type="button" className="danger-button" onClick={() => void execute(onDelete)} disabled={busy}>取消并删除</button>
+          <div><button type="button" className="soft-button" onClick={onClose}>关闭</button><button className="primary-button" disabled={busy}>保存变更</button></div>
+        </div>
+      </form>
+    </ModalShell>
+  );
+}
+
+function FeedbackModal({ item, onClose, onSave }: { item: ScheduleItem; onClose: () => void; onSave: (input: { tag: string; result: "completed" | "not_completed" | "rescheduled"; actualMinutes?: number; actualStartedAt?: string; actualEndedAt?: string; quality?: string; obstacle?: string; nextAction?: string; note?: string; comfortable?: boolean; timeFit?: string }) => void }) {
+  const tags = ["顺畅", "有阻力", "勉强完成", "状态很好", "状态很差", "被打断", "没开始"];
+  const initialTag = feedbackLabel(item.execution?.tags?.[0] ?? item.feedback) || "顺畅";
+  const [tag, setTag] = useState(initialTag); const [result, setResult] = useState<"completed" | "not_completed" | "rescheduled">((item.execution?.result as "completed" | "not_completed" | "rescheduled") ?? "completed"); const [actualMinutes, setActualMinutes] = useState(item.execution?.actualMinutes ?? durationMinutes(item.start, item.end)); const [actualStartedAt, setActualStartedAt] = useState(toLocalInput(item.execution?.actualStartedAt) || `${item.date ?? currentDateKey()}T${item.start}`); const [actualEndedAt, setActualEndedAt] = useState(toLocalInput(item.execution?.actualEndedAt) || `${item.date ?? currentDateKey()}T${item.end}`); const [quality, setQuality] = useState(item.execution?.quality ?? ""); const [obstacle, setObstacle] = useState(item.execution?.obstacle ?? ""); const [nextAction, setNextAction] = useState(item.execution?.nextAction ?? ""); const [note, setNote] = useState(item.execution?.note ?? item.execution?.deviationReason ?? ""); const [comfortable, setComfortable] = useState(item.execution?.comfortable ?? true); const [timeFit, setTimeFit] = useState(item.execution?.timeFit ?? "good");
+  return <ModalShell title={item.execution ? "修正执行记录" : "这次做得怎么样？"} caption={`${item.start}–${item.end} · ${item.title}`} onClose={onClose}><div className="feedback-result"><button className={result === "completed" ? "active" : ""} onClick={() => setResult("completed")}>完成</button><button className={result === "not_completed" ? "active" : ""} onClick={() => { setResult("not_completed"); setTag("没开始"); }}>未完成</button><button className={result === "rescheduled" ? "active" : ""} onClick={() => setResult("rescheduled")}>改期</button></div><div className="feedback-grid">{tags.map((value) => <button className={tag === value ? "active" : ""} key={value} onClick={() => setTag(value)}>{value}</button>)}</div><div className="form-stack feedback-details"><div className="field-row"><label>实际开始<input type="datetime-local" value={actualStartedAt} onChange={(event) => setActualStartedAt(event.target.value)} /></label><label>实际结束<input type="datetime-local" value={actualEndedAt} onChange={(event) => setActualEndedAt(event.target.value)} /></label><label>实际耗时（分钟）<input type="number" min="0" max="1440" value={actualMinutes} onChange={(event) => setActualMinutes(Number(event.target.value))} /></label><label>完成质量<select value={quality} onChange={(event) => setQuality(event.target.value)}><option value="">未评价</option><option value="great">很好</option><option value="good">达到预期</option><option value="rough">比较粗糙</option></select></label><label>时间匹配<select value={timeFit} onChange={(event) => setTimeFit(event.target.value)}><option value="good">很合适</option><option value="neutral">一般</option><option value="poor">不合适</option></select></label></div><label>遇到的阻碍<textarea rows={2} value={obstacle} onChange={(event) => setObstacle(event.target.value)} placeholder="例如：任务入口不够清楚、被消息打断" /></label><label>下一步<textarea rows={2} value={nextAction} onChange={(event) => setNextAction(event.target.value)} placeholder="例如：先补一份接口清单，再继续实现" /></label><label className="boolean-choice"><input type="checkbox" checked={comfortable} onChange={(event) => setComfortable(event.target.checked)} />这个强度对我来说舒适</label><label>{result === "completed" ? "补充感受" : "偏差原因"}<textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder="可选，写下最有用的一点" /></label><div className="form-actions"><button className="soft-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="button" onClick={() => onSave({ tag, result, actualMinutes, actualStartedAt, actualEndedAt, quality: quality || undefined, obstacle: obstacle || undefined, nextAction: nextAction || undefined, note, comfortable, timeFit })}>{item.execution ? "保存修正" : "保存执行反馈"}</button></div></div></ModalShell>;
+}
+
+function energyLabel(energy: ScheduleItem["energy"]) { return energy === "high" ? "高专注" : energy === "medium" ? "中等精力" : "低阻力"; }
+function feedbackTag(tag: string) { return tag === "顺畅" ? "smooth" : tag === "有阻力" ? "resistant" : tag === "勉强完成" ? "barely_completed" : tag === "状态很好" ? "high_energy" : tag === "状态很差" ? "low_energy" : tag === "被打断" ? "interrupted" : "not_started"; }
+function feedbackLabel(tag?: string) { return tag === "smooth" ? "顺畅" : tag === "resistant" ? "有阻力" : tag === "barely_completed" ? "勉强完成" : tag === "high_energy" ? "状态很好" : tag === "low_energy" ? "状态很差" : tag === "interrupted" ? "被打断" : tag === "not_started" ? "没开始" : tag ?? ""; }
+function currentTimezone() { try { const stored = localStorage.getItem("rr.settings"); return stored ? (JSON.parse(stored) as UserSettings).timezone : "Asia/Shanghai"; } catch { return "Asia/Shanghai"; } }
+function todayLabel() { return new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long", timeZone: currentTimezone() }).format(new Date()).replace(/日(星期)/, "日 · $1"); }
+function localDateKey(date: Date) { return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: currentTimezone() }).format(date); }
+function currentDateKey() { return localDateKey(new Date()); }
+function startOfCurrentWeek() { const date = new Date(); date.setHours(0, 0, 0, 0); date.setDate(date.getDate() - ((date.getDay() + 6) % 7)); return date; }
+function startOfDay(date: Date) { const next = new Date(date); next.setHours(0, 0, 0, 0); return next; }
+function durationMinutes(start: string, end: string) { const [sh, sm] = start.split(":").map(Number); const [eh, em] = end.split(":").map(Number); return Math.max(0, eh * 60 + em - sh * 60 - sm); }
+function minutesToCompact(minutes: number) { return minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60 ? `${minutes % 60}m` : ""}` : `${minutes}m`; }
+const TIMELINE_SNAP_MINUTES = 15;
+const TIMELINE_MIN_BLOCK_MINUTES = 15;
+/** 日程块最小可用高度（px），与时间轴刻度联动 */
+const HOUR_BLOCK_MIN_HEIGHT = 72;
+
+/**
+ * 按最短日程时长计算每小时时间轴高度，使 15 分钟块恰好达到最小可用高度。
+ */
+function timelineHourHeight() {
+  return HOUR_BLOCK_MIN_HEIGHT * (60 / TIMELINE_SNAP_MINUTES);
+}
+type ScheduleTimeSeed = { goalId?: string; taskId?: string; routineId?: string; date?: string; start?: string; end?: string };
+
+/**
+ * 将分钟数格式化为 HH:mm 时间字符串。
+ * @param totalMinutes - 从 0:00 起算的分钟数
+ */
+function formatClock(totalMinutes: number) {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+/** Format a timeline label, wrapping the next day's midnight while preserving the 00:30 endpoint. */
+function formatTimelineMinute(totalMinutes: number) {
+  const normalized = ((totalMinutes % 1440) + 1440) % 1440;
+  return formatClock(normalized);
+}
+
+/**
+ * 判断日程块是否属于「未完成且已开始」——用于日视图顶部回看提示。
+ * Routine 实例若超过计划结束时间且未记录执行，服务端会标为 `missed`，仍应计入。
+ * @param item - 日程块
+ * @param currentMinutes - 用户时区下的当前时刻（从 0:00 起算的分钟数）
+ */
+function isEarlierUnfinishedSchedule(item: ScheduleItem, currentMinutes: number) {
+  if (parseClock(item.start) >= currentMinutes) return false;
+  return item.status === "planned" || item.status === "missed";
+}
+
+/**
+ * 列出已滚出时间轴视口上方、且开始时间早于当前时刻的未完成日程。
+ * @param items - 当日待执行且已开始的日程（按开始时间升序）
+ * @param scrollTop - 时间轴滚动容器的 scrollTop
+ * @param timelineStartMinutes - 日视图起始分钟（如 7:00 → 420）
+ * @param hourHeight - 每小时对应的像素高度
+ */
+function listHiddenEarlierPending(items: ScheduleItem[], scrollTop: number, timelineStartMinutes: number, hourHeight: number) {
+  const viewportTop = scrollTop + 16;
+  return items.filter((item) => ((parseClock(item.start) - timelineStartMinutes) / 60) * hourHeight < viewportTop);
+}
+
+/**
+ * 统计视口上方被遮挡的待执行日程数量，用于顶部提示条文案。
+ * @param items - 当日待执行且已开始的日程（按开始时间升序）
+ * @param scrollTop - 时间轴滚动容器的 scrollTop
+ * @param timelineStartMinutes - 日视图起始分钟
+ * @param hourHeight - 每小时对应的像素高度
+ */
+function countHiddenEarlierPending(items: ScheduleItem[], scrollTop: number, timelineStartMinutes: number, hourHeight: number) {
+  return listHiddenEarlierPending(items, scrollTop, timelineStartMinutes, hourHeight).length;
+}
+
+/**
+ * 将分钟数吸附到时间轴网格（默认 15 分钟）。
+ * @param minutes - 原始分钟偏移
+ */
+function snapTimelineMinutes(minutes: number) {
+  return Math.round(minutes / TIMELINE_SNAP_MINUTES) * TIMELINE_SNAP_MINUTES;
+}
+
+/**
+ * 将分钟值限制在日视图可见时间范围内。
+ * @param minutes - 待限制的分钟值
+ * @param startHour - 日视图起始小时
+ * @param endHour - 日视图结束小时
+ */
+function clampTimelineMinutes(minutes: number, startHour: number, endHour: number) {
+  const minBound = startHour * 60;
+  const maxBound = endHour * 60;
+  return Math.max(minBound, Math.min(minutes, maxBound - TIMELINE_MIN_BLOCK_MINUTES));
+}
+
+/**
+ * 约束日程块起止时间，保证最短时长且不超出日视图边界。
+ * @param start - 开始分钟数
+ * @param end - 结束分钟数
+ * @param startHour - 日视图起始小时
+ * @param endHour - 日视图结束小时
+ */
+function clampBlockTimes(start: number, end: number, startHour: number, endHour: number) {
+  const minBound = startHour * 60;
+  const maxBound = endHour * 60;
+  let nextStart = snapTimelineMinutes(start);
+  let nextEnd = snapTimelineMinutes(end);
+  if (nextEnd - nextStart < TIMELINE_MIN_BLOCK_MINUTES) {
+    if (end !== start) nextEnd = nextStart + TIMELINE_MIN_BLOCK_MINUTES;
+    else nextStart = nextEnd - TIMELINE_MIN_BLOCK_MINUTES;
+  }
+  nextStart = Math.max(minBound, Math.min(nextStart, maxBound - TIMELINE_MIN_BLOCK_MINUTES));
+  nextEnd = Math.max(nextStart + TIMELINE_MIN_BLOCK_MINUTES, Math.min(nextEnd, maxBound));
+  return { start: nextStart, end: nextEnd };
+}
+
+function parseClock(value: string) { const [hours, minutes] = value.split(":").map(Number); return hours * 60 + minutes; }
+function timeMinutesInTimezone(date: Date, timezone: string) { const parts = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone }).formatToParts(date); const values = Object.fromEntries(parts.map((part) => [part.type, part.value])); return Number(values.hour) * 60 + Number(values.minute); }
+function formatTimeInTimezone(date: Date, timezone: string) { return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone }).format(date); }
+function scheduleStatusLabel(status: ScheduleItem["status"]) { return status === "completed" ? "已完成" : status === "missed" ? "未完成" : status === "rescheduled" ? "已改期" : status === "cancelled" ? "已取消" : "待执行"; }
+
+/**
+ * 判断日程块是否应在日历视图中展示（排除已改期、已取消的历史块）。
+ * @param item - 日程块
+ */
+function isActiveCalendarBlock(item: ScheduleItem) {
+  return item.status !== "rescheduled" && item.status !== "cancelled";
+}
+function taskStatusLabel(status: string) { return ({ draft: "草稿", ready: "待安排", scheduled: "已安排", in_progress: "进行中", completed: "已完成", blocked: "受阻", cancelled: "已取消", archived: "已归档" } as Record<string, string>)[status] ?? status; }
+function energyText(value?: string | null) { return value === "high" ? "高精力" : value === "low" ? "低精力" : "中等精力"; }
+function focusText(value?: string | null) { return value === "high" ? "高专注" : value === "low" ? "低专注" : "中专注"; }
+function rhythmConditionLabels(value: unknown): string[] {
+  if (value == null) return [];
+  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+  if (Array.isArray(value)) return value.flatMap(rhythmConditionLabels);
+  if (typeof value !== "object") return [];
+  const condition = value as { preferredTimeOfDay?: unknown; notes?: unknown };
+  const timeLabel = typeof condition.preferredTimeOfDay === "string" ? ({ morning: "上午", afternoon: "下午", evening: "晚上", anytime: "任意时段" } as Record<string, string>)[condition.preferredTimeOfDay] ?? condition.preferredTimeOfDay : "";
+  const notes = typeof condition.notes === "string" ? condition.notes.trim() : "";
+  return [timeLabel, notes].filter(Boolean);
+}
+function goalCategoryLabel(value: string) { return ({ project: "项目型目标", skill: "能力型目标", routine: "Routine 型目标", mixed: "混合型目标" } as Record<string, string>)[value] ?? value; }
+function weekdayIndex(date: string) { return new Date(`${date}T12:00:00`).getDay(); }
+function reviewPeriodLabel(start: Date, endExclusive: Date) { const end = new Date(endExclusive); end.setDate(end.getDate() - 1); const format = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric" }); return `${format.format(start)}—${format.format(end)}`; }
+function progressStatus(text: string) { return (["on_track", "slightly_delayed", "blocked", "needs_adjustment", "ready_for_user_review"] as const).find((status) => text.includes(status)); }
+function progressStatusLabel(status: NonNullable<ReturnType<typeof progressStatus>>) { return ({ on_track: "推进正常", slightly_delayed: "略有延迟", blocked: "当前受阻", needs_adjustment: "需要调整", ready_for_user_review: "等待你的阶段确认" })[status]; }
+function zonedDateTimeToIso(date: string, time: string, timezone: string) { return zonedDateTimeToUtc(date, time, timezone).toISOString(); }
+function dateInputInTimezone(value: string | null | undefined, timezone: string) { if (!value) return ""; return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: timezone }).format(new Date(value)); }
+function localInputToIso(value: string, timezone: string) { const [date, time] = value.split("T"); return zonedDateTimeToIso(date, time, timezone); }
+function toLocalInput(value?: string | null) { if (!value) return ""; const date = new Date(value); return `${localDateKey(date)}T${new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: currentTimezone() }).format(date)}`; }
+function applyLocalChangeSet(changeSet: AgentChangeSet, goals: Goal[], schedule: ScheduleItem[], setGoals: React.Dispatch<React.SetStateAction<Goal[]>>, setSchedule: React.Dispatch<React.SetStateAction<ScheduleItem[]>>, setNotice: (message: string) => void) {
+  let nextGoals = [...goals]; let nextSchedule = [...schedule]; const references = new Map<string, string>();
+  for (const operation of changeSet.operations) {
+    const entity = String(operation.entity ?? "").toLowerCase(); const type = String(operation.type ?? "");
+    const payload = (operation.payload ?? operation.after ?? {}) as Record<string, unknown>; const entityId = String(operation.entityId ?? "");
+    const resolve = (value: unknown) => references.get(String(value ?? "")) ?? String(value ?? ""); const remember = (id: string) => { const key = String(payload.clientRef ?? payload.tempId ?? ""); if (key) references.set(key, id); };
+    if (type === "update" && entity.includes("goal")) {
+      nextGoals = nextGoals.map((goal) => goal.id === entityId ? { ...goal, title: String(payload.title ?? goal.title), description: String(payload.description ?? goal.description), category: (payload.category ?? goal.category) as Goal["category"], status: payload.status === "active" ? "active" : goal.status, version: (goal.version ?? 1) + 1 } : goal);
+    } else if (type === "create" && entity.includes("outcome")) {
+      const goalId = resolve(payload.goalId ?? payload.goalRef); const outcome = { id: crypto.randomUUID(), description: String(payload.description ?? payload.title ?? "结果指标"), completedAt: null, version: 1 };
+      nextGoals = nextGoals.map((goal) => goal.id === goalId ? { ...goal, outcomes: [...(goal.outcomes ?? []), outcome] } : goal); remember(outcome.id);
+    } else if (type === "create" && entity.includes("milestone")) {
+      const goalId = resolve(payload.goalId ?? payload.goalRef); const milestone = { id: crypto.randomUUID(), title: String(payload.title ?? "里程碑"), description: String(payload.description ?? ""), status: "pending", version: 1 };
+      nextGoals = nextGoals.map((goal) => goal.id === goalId ? { ...goal, milestones: [...(goal.milestones ?? []), milestone] } : goal); remember(milestone.id);
+    } else if (type === "create" && entity.includes("task")) {
+      const goalId = resolve(payload.goalId ?? payload.goalRef) || nextGoals[0]?.id || ""; const task = { id: crypto.randomUUID(), title: String(payload.title ?? "小律建议的任务"), status: "ready", version: 1, milestoneId: resolve(payload.milestoneId ?? payload.milestoneRef) || undefined, intent: String(payload.intent ?? ""), completionCriteria: Array.isArray(payload.completionCriteria) ? payload.completionCriteria.map(String) : [], suggestedSteps: Array.isArray(payload.suggestedSteps) ? payload.suggestedSteps.map(String) : [], rhythmConditions: Array.isArray(payload.rhythmConditions) ? payload.rhythmConditions.map(String) : [], estimatedMinutes: Number(payload.estimatedMinutes ?? 45), energyLevel: String(payload.energyLevel ?? "medium"), focusLevel: String(payload.focusLevel ?? "medium") };
+      nextGoals = nextGoals.map((goal) => goal.id === goalId ? { ...goal, tasks: [...(goal.tasks ?? []), task], tasksTotal: goal.tasksTotal + 1 } : goal);
+      remember(task.id);
+    } else if (type === "create" && entity.includes("routine")) {
+      const goalId = resolve(payload.goalId ?? payload.goalRef) || nextGoals[0]?.id || ""; const routine = { id: crypto.randomUUID(), title: String(payload.title ?? "小律建议的 Routine"), description: String(payload.reason ?? ""), status: "active", version: 1, recurrenceRule: String(payload.recurrenceRule ?? "FREQ=DAILY"), startDate: String(payload.startDate ?? new Date().toISOString()), endDate: payload.endDate ? String(payload.endDate) : undefined, durationMinutes: Number(payload.durationMinutes ?? payload.targetMinutes ?? 20), preferredStartTime: payload.preferredStartTime ? String(payload.preferredStartTime) : undefined, preferredEndTime: payload.preferredEndTime ? String(payload.preferredEndTime) : undefined, preferredTimeOfDay: String(payload.preferredTimeOfDay ?? payload.preferredTime ?? "morning"), minimumVersion: payload.minimumVersion ? String(payload.minimumVersion) : undefined, displayMode: String(payload.displayMode ?? "subtle"), executionRecords: [] };
+      nextGoals = nextGoals.map((goal) => goal.id === goalId ? { ...goal, routines: [...(goal.routines ?? []), routine] } : goal);
+      remember(routine.id);
+    } else if (type === "create" && entity.includes("schedule")) {
+      nextSchedule.push({ id: crypto.randomUUID(), title: String(payload.title ?? "小律建议的安排"), goalId: String(payload.goalId ?? nextGoals[0]?.id ?? ""), date: String(payload.date ?? currentDateKey()), start: String(payload.start ?? "10:00"), end: String(payload.end ?? "11:00"), kind: "task", status: "planned", energy: "medium", version: 1 });
+    } else if (type === "update" && entity.includes("schedule")) {
+      nextSchedule = nextSchedule.map((item) => item.id === entityId ? { ...item, title: String(payload.title ?? item.title), start: String(payload.start ?? item.start), end: String(payload.end ?? item.end), date: String(payload.date ?? item.date ?? currentDateKey()), version: (item.version ?? 1) + 1 } : item);
+    } else if (type === "update" && entity.includes("task")) {
+      nextGoals = nextGoals.map((goal) => ({ ...goal, tasks: goal.tasks?.map((task) => task.id === entityId ? { ...task, title: String(payload.title ?? task.title), version: task.version + 1 } : task) }));
+    } else if (type === "archive" && entity.includes("schedule")) nextSchedule = nextSchedule.filter((item) => item.id !== entityId);
+  }
+  setGoals(nextGoals); setSchedule(nextSchedule.sort((a, b) => `${a.date ?? ""}${a.start}`.localeCompare(`${b.date ?? ""}${b.start}`))); setNotice("小律的变更草案已应用");
+}
+function lines(value: string) { return value.split("\n").map((item) => item.trim()).filter(Boolean); }
+function presetRule(rule: string) { return ["FREQ=DAILY", "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "FREQ=WEEKLY;BYDAY=SA,SU"].includes(rule) ? rule : "custom"; }
+function parseRoutineFormRule(rule = "FREQ=DAILY;BYHOUR=9;BYMINUTE=0") { const parts = Object.fromEntries(rule.split(";").map((part) => { const [key, value = ""] = part.split("="); return [key, value]; })); return { frequency: parts.FREQ ?? "DAILY", interval: Math.max(1, Number(parts.INTERVAL) || 1), weekdays: (parts.BYDAY ?? "").split(",").filter(Boolean), time: `${String(Number(parts.BYHOUR) || 9).padStart(2, "0")}:${String(Number(parts.BYMINUTE) || 0).padStart(2, "0")}` }; }
+function buildRoutineRule(frequency: string, interval: number, weekdays: string[], startDate: string, time: string) { const [hour, minute] = time.split(":"); const parts = [`FREQ=${frequency}`, `INTERVAL=${Math.max(1, interval)}`]; if (frequency === "WEEKLY" && weekdays.length) parts.push(`BYDAY=${weekdays.join(",")}`); if (frequency === "MONTHLY") parts.push(`BYMONTHDAY=${Number(startDate.slice(-2))}`); parts.push(`BYHOUR=${Number(hour)}`, `BYMINUTE=${Number(minute)}`); return parts.join(";"); }
+function recurrenceLabel(rule: string) { const parsed = parseRoutineFormRule(rule); const prefix = parsed.interval > 1 ? `每 ${parsed.interval} ` : "每"; if (parsed.frequency === "DAILY") return parsed.interval === 1 ? "每天" : `${prefix}天`; if (parsed.frequency === "WEEKLY") return parsed.weekdays.length ? `${prefix}周 · ${parsed.weekdays.map((day) => ({ MO: "一", TU: "二", WE: "三", TH: "四", FR: "五", SA: "六", SU: "日" } as Record<string, string>)[day]).join("/")}` : `${prefix}周`; if (parsed.frequency === "MONTHLY") return parsed.interval === 1 ? "每月" : `${prefix}月`; return parsed.interval === 1 ? "每年" : `${prefix}年`; }
+function timeOfDayFromClock(time: string) { const hour = Number(time.split(":")[0]); return hour < 12 ? "morning" : hour < 18 ? "afternoon" : hour < 22 ? "evening" : "night"; }
+function timeOfDayLabel(period?: string | null, time?: string | null) { return time || ({ morning: "早上", afternoon: "下午", evening: "晚上", night: "夜间" } as Record<string, string>)[period ?? ""] || "时间灵活"; }
+function preferredWindowLabel(period?: string | null, start?: string | null, end?: string | null) { return start && end ? `${start}–${end}` : timeOfDayLabel(period, start); }

@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: rhythm-routine-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rhythm
+      POSTGRES_PASSWORD: rhythm_dev
+      POSTGRES_DB: rhythm_routine
+    ports:
+      - "5432:5432"
+    volumes:
+      - rhythm_routine_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rhythm -d rhythm_routine"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  rhythm_routine_data:

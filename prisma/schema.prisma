@@ -1,0 +1,448 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum GoalStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+enum MilestoneStatus {
+  PENDING
+  READY_FOR_REVIEW
+  COMPLETED
+  REJECTED
+  ARCHIVED
+}
+
+enum TaskStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  BLOCKED
+  CANCELLED
+  ARCHIVED
+}
+
+enum RoutineStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+enum ScheduleBlockStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  MISSED
+  RESCHEDULED
+  CANCELLED
+}
+
+enum ReviewStatus {
+  GENERATING
+  DRAFT
+  AWAITING_CONFIRMATION
+  CONFIRMED
+  FAILED
+}
+
+enum ReviewType {
+  DAILY
+  WEEKLY
+  MILESTONE
+}
+
+enum AgentRunStatus {
+  QUEUED
+  RUNNING
+  AWAITING_CONFIRMATION
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ChangeSetStatus {
+  DRAFT
+  AWAITING_CONFIRMATION
+  APPROVED
+  REJECTED
+  APPLIED
+  FAILED
+}
+
+enum TriggerSource {
+  USER
+  SCHEDULED
+  SYSTEM
+}
+
+enum ToolRisk {
+  READ
+  DRAFT_WRITE
+  CONFIRMED_WRITE
+  SYSTEM
+}
+
+model User {
+  id               String   @id @default(cuid())
+  displayName      String
+  timezone         String   @default("Asia/Shanghai")
+  dailyReviewTime  String   @default("21:30")
+  weeklyReviewDay  Int      @default(0)
+  weeklyReviewTime String   @default("20:30")
+  defaultModel     String   @default("qwen-plus")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  goals            Goal[]
+  scheduleBlocks   ScheduleBlock[]
+  reviews          Review[]
+  rhythmSignals    RhythmSignal[]
+  agentRuns        AgentRun[]
+  changeSets       ChangeSet[]
+}
+
+model Goal {
+  id          String     @id @default(cuid())
+  userId      String
+  title       String
+  description String?
+  category    String?
+  project     String?
+  skill       String?
+  status      GoalStatus @default(DRAFT)
+  targetDate  DateTime?
+  version     Int        @default(1)
+  archivedAt  DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  user        User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  outcomes    Outcome[]
+  milestones  Milestone[]
+  tasks       Task[]
+  routines    Routine[]
+  scheduleBlocks ScheduleBlock[]
+
+  @@index([userId, status])
+}
+
+model Outcome {
+  id          String   @id @default(cuid())
+  goalId      String
+  description String
+  completedAt DateTime?
+  version     Int      @default(1)
+  archivedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  goal        Goal     @relation(fields: [goalId], references: [id], onDelete: Restrict)
+
+  @@index([goalId, archivedAt])
+}
+
+model Milestone {
+  id          String          @id @default(cuid())
+  goalId      String
+  title       String
+  description String?
+  status      MilestoneStatus @default(PENDING)
+  targetDate  DateTime?
+  completedAt DateTime?
+  position    Int             @default(0)
+  version     Int             @default(1)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  goal        Goal            @relation(fields: [goalId], references: [id], onDelete: Restrict)
+  tasks       Task[]
+
+  @@index([goalId, position])
+}
+
+model Task {
+  id              String     @id @default(cuid())
+  goalId          String
+  milestoneId     String?
+  parentTaskId    String?
+  title           String
+  intent          String?
+  completionCriteria Json?
+  suggestedSteps  Json?
+  estimatedMinutes Int?
+  energyLevel     String?
+  focusLevel      String?
+  rhythmConditions Json?
+  status          TaskStatus @default(DRAFT)
+  position        Int        @default(0)
+  completedAt     DateTime?
+  completionRecord Json?
+  version         Int        @default(1)
+  archivedAt      DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  goal            Goal       @relation(fields: [goalId], references: [id], onDelete: Restrict)
+  milestone       Milestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  parentTask      Task?      @relation("TaskChildren", fields: [parentTaskId], references: [id], onDelete: SetNull)
+  children        Task[]     @relation("TaskChildren")
+  scheduleBlocks  ScheduleBlock[]
+  linkedScheduleBlocks ScheduleBlockTask[]
+
+  @@index([goalId, status])
+}
+
+model Routine {
+  id              String        @id @default(cuid())
+  goalId          String
+  title           String
+  description     String?
+  recurrenceRule  String
+  startDate        DateTime      @default(now())
+  endDate          DateTime?
+  durationMinutes  Int           @default(20)
+  preferredStartTime String?
+  preferredEndTime String?
+  preferredTimeOfDay String?
+  priority         String        @default("medium")
+  displayMode      String        @default("subtle")
+  minimumVersion  String?
+  status          RoutineStatus @default(DRAFT)
+  version         Int           @default(1)
+  archivedAt      DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  goal            Goal          @relation(fields: [goalId], references: [id], onDelete: Restrict)
+  scheduleBlocks  ScheduleBlock[]
+  executionRecords RoutineExecutionRecord[]
+
+  @@index([goalId, status])
+}
+
+model RoutineExecutionRecord {
+  id                String   @id @default(cuid())
+  routineId         String
+  occurrenceDate    DateTime
+  plannedStartAt    DateTime?
+  plannedEndAt      DateTime?
+  status            String
+  actualMinutes     Int?
+  feedbackTags      String[]
+  note              String?
+  rescheduledStartAt DateTime?
+  rescheduledEndAt  DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  routine           Routine  @relation(fields: [routineId], references: [id], onDelete: Cascade)
+
+  @@unique([routineId, occurrenceDate])
+  @@index([routineId, occurrenceDate])
+}
+
+model ScheduleBlock {
+  id               String              @id @default(cuid())
+  userId           String
+  goalId           String?
+  taskId           String?
+  routineId        String?
+  title            String
+  startsAt         DateTime
+  endsAt           DateTime
+  status           ScheduleBlockStatus @default(PLANNED)
+  flexibility      String?
+  source            String              @default("manual")
+  rescheduledFromId String?
+  changeReason      String?
+  version           Int                 @default(1)
+  deletedAt         DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  user              User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  goal              Goal?               @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  task              Task?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  routine           Routine?            @relation(fields: [routineId], references: [id], onDelete: SetNull)
+  linkedTasks       ScheduleBlockTask[]
+  executionRecord   ExecutionRecord?
+
+  @@index([userId, startsAt])
+  @@unique([routineId, startsAt])
+}
+
+model ScheduleBlockTask {
+  id              String        @id @default(cuid())
+  scheduleBlockId String
+  taskId          String
+  position        Int           @default(0)
+  createdAt       DateTime      @default(now())
+  scheduleBlock   ScheduleBlock @relation(fields: [scheduleBlockId], references: [id], onDelete: Cascade)
+  task            Task          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([scheduleBlockId, taskId])
+  @@index([taskId])
+}
+
+model ExecutionRecord {
+  id                String   @id @default(cuid())
+  scheduleBlockId   String   @unique
+  actualStartedAt   DateTime?
+  actualEndedAt     DateTime?
+  actualMinutes     Int?
+  result             String
+  quality            String?
+  obstacle           String?
+  deviationReason    String?
+  nextAction         String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  scheduleBlock      ScheduleBlock @relation(fields: [scheduleBlockId], references: [id], onDelete: Restrict)
+  rhythmFeedback     RhythmFeedback?
+}
+
+model RhythmFeedback {
+  id                String   @id @default(cuid())
+  executionRecordId String   @unique
+  tags              String[]
+  note              String?
+  comfortable       Boolean?
+  timeFit            String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  executionRecord   ExecutionRecord @relation(fields: [executionRecordId], references: [id], onDelete: Restrict)
+}
+
+model RhythmSignal {
+  id          String   @id @default(cuid())
+  userId      String
+  type        String
+  statement   String
+  confidence  Float?
+  evidence    Json?
+  validFrom   DateTime @default(now())
+  validUntil  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, type])
+}
+
+model Review {
+  id          String       @id @default(cuid())
+  userId      String
+  type        ReviewType
+  periodStart DateTime
+  periodEnd   DateTime
+  status      ReviewStatus @default(DRAFT)
+  summary     String?
+  metrics     Json?
+  findings    Json?
+  suggestions Json?
+  confirmedAt DateTime?
+  idempotencyKey String    @unique
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  user        User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+}
+
+model AgentRun {
+  id            String         @id @default(cuid())
+  userId        String
+  capability    String
+  triggerSource TriggerSource
+  modelProvider String
+  modelId       String
+  status        AgentRunStatus @default(QUEUED)
+  maxSteps      Int            @default(12)
+  maxTokens     Int?
+  inputSummary  String?
+  finalSummary  String?
+  errorCode     String?
+  errorMessage  String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  user          User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  steps         AgentStep[]
+  contextItems  ContextManifestItem[]
+  changeSets    ChangeSet[]
+
+  @@index([userId, createdAt])
+}
+
+model AgentStep {
+  id             String   @id @default(cuid())
+  agentRunId     String
+  sequence       Int
+  kind           String
+  inputSummary   String?
+  outputSummary  String?
+  inputTokens    Int?
+  outputTokens   Int?
+  estimatedCost  Decimal? @db.Decimal(12, 6)
+  durationMs     Int?
+  createdAt      DateTime @default(now())
+  agentRun       AgentRun @relation(fields: [agentRunId], references: [id], onDelete: Restrict)
+  toolCalls      ToolCall[]
+
+  @@unique([agentRunId, sequence])
+}
+
+model ToolCall {
+  id            String   @id @default(cuid())
+  agentStepId   String
+  toolName      String
+  risk          ToolRisk
+  input         Json
+  output        Json?
+  idempotencyKey String? @unique
+  status        String
+  errorCode     String?
+  durationMs    Int?
+  createdAt     DateTime @default(now())
+  agentStep     AgentStep @relation(fields: [agentStepId], references: [id], onDelete: Restrict)
+}
+
+model ContextManifestItem {
+  id          String   @id @default(cuid())
+  agentRunId  String
+  entityType  String
+  entityId    String
+  version     Int?
+  reason      String
+  createdAt   DateTime @default(now())
+  agentRun    AgentRun @relation(fields: [agentRunId], references: [id], onDelete: Restrict)
+
+  @@index([agentRunId, entityType])
+}
+
+model ChangeSet {
+  id             String          @id @default(cuid())
+  userId         String
+  agentRunId     String?
+  status         ChangeSetStatus @default(DRAFT)
+  title          String
+  reason         String
+  riskLevel      String
+  operations     Json
+  baseVersions   Json
+  decisionNote   String?
+  decidedAt      DateTime?
+  appliedAt      DateTime?
+  idempotencyKey String          @unique
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  user           User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  agentRun       AgentRun?       @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+}

@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>日程 - Rhythm & Routine</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="schedule-page">
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand-lockup">
+        <span class="brand-index">RR / 01</span>
+        <h1 class="brand-title">Rhythm & Routine</h1>
+        <p class="brand-subtitle">让计划跟得上你的节奏</p>
+      </div>
+      <nav class="nav">
+        <a class="active" href="schedule.html"><span class="keycap">S</span><span>日程</span></a>
+        <a href="goals.html"><span class="keycap">G</span><span>目标</span></a>
+        <a href="review.html"><span class="keycap">R</span><span>回顾</span></a>
+      </nav>
+      <div class="sidebar-note">
+        <strong>日程页负责</strong>
+        <div class="muted">日程块、执行记录、节奏反馈。</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <div class="schedule-overline">THURSDAY · 06.18</div>
+          <h2 class="page-title">今天的节奏</h2>
+          <p class="page-caption">3 个日程块 · 已完成 2 个 · 还有 1 个待确认</p>
+        </div>
+        <div class="rhythm-signature" aria-label="今日节奏：上午高专注，下午回顾，晚间训练">
+          <span class="rhythm-label">今日节奏</span>
+          <span class="rhythm-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <span class="rhythm-note">专注 → 整理 → 身体</span>
+        </div>
+      </header>
+
+      <div class="content">
+        <div class="toolbar">
+          <div class="segmented" data-tab-group="schedule">
+            <button class="active" data-tab-target="todayPanel" type="button">今日</button>
+            <button data-tab-target="weekPanel" type="button">本周</button>
+            <button data-tab-target="monthPanel" type="button">本月</button>
+          </div>
+          <div class="top-actions">
+            <button class="text-button" type="button">安排任务</button>
+            <button class="text-button" type="button">请小律调整</button>
+          </div>
+        </div>
+
+        <section id="todayPanel" data-tab-panel="schedule" class="page-grid">
+          <div class="page-stack">
+            <section class="section">
+              <div class="section-header">
+                <div>
+                  <div class="date-lockup"><span class="date-number">18</span><span><b>JUN / 周四</b><small>上午的高专注节奏已完成</small></span></div>
+                </div>
+                <span class="pill green">执行页</span>
+              </div>
+              <div class="timeline-shell">
+                <div class="day-timeline">
+                  <div class="current-time-line"><span>现在 16:20</span></div>
+                  <div class="time-row"><div class="time-label">08:00</div><div class="time-lane"></div></div>
+                  <div class="time-row"><div class="time-label">09:00</div><div class="time-lane"></div></div>
+                  <div class="time-row">
+                    <div class="time-label">10:00</div>
+                    <div class="time-lane">
+                      <button class="schedule-card" type="button" data-open-drawer="code">
+                        <div class="list-item-title"><span>设计日程块数据结构</span><span class="pill">90m</span></div>
+                        <div class="muted">关联：Rhythm & Routine MVP / 里程碑 1 / 任务</div>
+                        <div class="pill-row"><span class="pill blue">高专注</span><span class="pill">上午优先</span><span class="pill green">已完成</span></div>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="time-row"><div class="time-label">11:00</div><div class="time-lane"></div></div>
+                  <div class="time-row"><div class="time-label">12:00</div><div class="time-lane"></div></div>
+                  <div class="time-row"><div class="time-label">13:00</div><div class="time-lane"></div></div>
+                  <div class="time-row"><div class="time-label">14:00</div><div class="time-lane"></div></div>
+                  <div class="time-row">
+                    <div class="time-label">15:00</div>
+                    <div class="time-lane">
+                      <button class="schedule-card gold" type="button" data-open-drawer="review">
+                        <div class="list-item-title"><span>整理 MVP 页面结构反馈</span><span class="pill">45m</span></div>
+                        <div class="muted">关联：产品设计文档 / 回顾任务</div>
+                        <div class="pill-row"><span class="pill gold">回顾</span><span class="pill">中专注</span><span class="pill green">已完成</span></div>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="time-row"><div class="time-label">16:00</div><div class="time-lane"></div></div>
+                  <div class="time-row"><div class="time-label">17:00</div><div class="time-lane"></div></div>
+                  <div class="time-row"><div class="time-label">18:00</div><div class="time-lane"></div></div>
+                  <div class="time-row">
+                    <div class="time-label">19:00</div>
+                    <div class="time-lane">
+                      <button class="schedule-card green" type="button" data-open-drawer="gym">
+                        <div class="list-item-title"><span>Push 训练</span><span class="pill">75m</span></div>
+                        <div class="muted">关联：健身目标 / 每周 3-4 练 / Routine</div>
+                        <div class="pill-row"><span class="pill green">健身房</span><span class="pill">可改期</span><span class="pill gold">等待反馈</span></div>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="time-row"><div class="time-label">20:00</div><div class="time-lane"></div></div>
+                  <div class="time-row"><div class="time-label">21:00</div><div class="time-lane"></div></div>
+                  <div class="time-row"><div class="time-label">22:00</div><div class="time-lane"></div></div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="side-stack">
+            <section class="section">
+              <div class="section-header"><h3>下一步</h3><span class="pill green">小律</span></div>
+              <div class="list">
+                <div class="list-item">
+                  <div class="list-item-title"><span>如果 Push 训练未完成</span><span class="pill gold">待确认</span></div>
+                  <div class="muted">询问用户：今天晚点、本周补上、降低门槛，或重排本周。</div>
+                </div>
+                <div class="list-item">
+                  <div class="list-item-title"><span>代码任务适合上午</span><span class="pill blue">节奏信号</span></div>
+                  <div class="muted">近期高专注任务在上午更顺畅，晚间更适合整理与低阻力任务。</div>
+                </div>
+              </div>
+            </section>
+            <section class="section">
+              <div class="section-header"><h3>今日执行概览</h3></div>
+              <div class="metrics">
+                <div class="metric"><div class="metric-value">2</div><div class="muted">已完成</div></div>
+                <div class="metric"><div class="metric-value">1</div><div class="muted">待反馈</div></div>
+                <div class="metric"><div class="metric-value">0</div><div class="muted">未完成</div></div>
+              </div>
+            </section>
+          </aside>
+        </section>
+
+        <section id="weekPanel" data-tab-panel="schedule" hidden>
+          <section class="section">
+            <div class="section-header">
+              <div>
+                <h2>本周日程</h2>
+                <div class="muted">固定高度时间线，上下滑动查看不同时段。</div>
+              </div>
+              <button class="text-button" type="button">让小律重排本周</button>
+            </div>
+            <div class="timeline-shell">
+              <div class="week-grid">
+                <div class="week-cell header"></div><div class="week-cell header">周一<br />15</div><div class="week-cell header">周二<br />16</div><div class="week-cell header">周三<br />17</div><div class="week-cell header">周四<br />18</div><div class="week-cell header">周五<br />19</div><div class="week-cell header">周六<br />20</div><div class="week-cell header">周日<br />21</div>
+                <div class="week-cell hour">09:00</div><div class="week-cell"><button class="week-chip">实体模型整理<br />10:00</button></div><div class="week-cell"><button class="week-chip green">Pull 训练<br />10:30</button></div><div class="week-cell"><button class="week-chip">小律能力架构设计<br />09:30</button></div><div class="week-cell"><button class="week-chip">数据结构草稿<br />10:00</button></div><div class="week-cell"><button class="week-chip gold">周中回顾<br />11:00</button></div><div class="week-cell"></div><div class="week-cell"><button class="week-chip green">Legs 训练<br />10:00</button></div>
+                <div class="week-cell hour">12:00</div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div>
+                <div class="week-cell hour">15:00</div><div class="week-cell"><button class="week-chip gold">文档归档<br />15:00</button></div><div class="week-cell"></div><div class="week-cell"><button class="week-chip">页面线框<br />14:30</button></div><div class="week-cell"><button class="week-chip">前端原型<br />15:00</button></div><div class="week-cell"></div><div class="week-cell"><button class="week-chip">任务拆解<br />16:00</button></div><div class="week-cell"></div>
+                <div class="week-cell hour">18:00</div><div class="week-cell"><button class="week-chip green">Push 训练<br />19:00</button></div><div class="week-cell"></div><div class="week-cell"><button class="week-chip gold">低阻力整理<br />20:00</button></div><div class="week-cell"><button class="week-chip green">Push 补练<br />19:30</button></div><div class="week-cell"><button class="week-chip">自由编码<br />20:00</button></div><div class="week-cell"></div><div class="week-cell"><button class="week-chip gold">周回顾<br />20:30</button></div>
+                <div class="week-cell hour">21:00</div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div><div class="week-cell"></div>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section id="monthPanel" data-tab-panel="schedule" hidden>
+          <section class="section">
+            <div class="section-header">
+              <div>
+                <h2>6 月日历</h2>
+                <div class="muted">按月查看这个月完成、待反馈和改期的日程块。</div>
+              </div>
+              <div class="actions">
+                <button class="text-button" type="button">上个月</button>
+                <button class="text-button" type="button">今天</button>
+                <button class="text-button" type="button">下个月</button>
+              </div>
+            </div>
+
+            <div class="month-legend" aria-label="日程状态说明">
+              <span><i class="legend-dot blue"></i>任务</span>
+              <span><i class="legend-dot green"></i>Routine</span>
+              <span><i class="legend-dot gold"></i>回顾</span>
+              <span><i class="legend-dot red"></i>未完成 / 改期</span>
+            </div>
+
+            <div class="month-scroll">
+              <div class="month-calendar" aria-label="月日历">
+              <div class="month-weekday">周一</div>
+              <div class="month-weekday">周二</div>
+              <div class="month-weekday">周三</div>
+              <div class="month-weekday">周四</div>
+              <div class="month-weekday">周五</div>
+              <div class="month-weekday">周六</div>
+              <div class="month-weekday">周日</div>
+
+              <div class="month-day muted-day"><div class="day-number">25</div></div>
+              <div class="month-day muted-day"><div class="day-number">26</div></div>
+              <div class="month-day muted-day"><div class="day-number">27</div></div>
+              <div class="month-day muted-day"><div class="day-number">28</div></div>
+              <div class="month-day muted-day"><div class="day-number">29</div></div>
+              <div class="month-day muted-day"><div class="day-number">30</div></div>
+              <div class="month-day"><div class="day-number">1</div><button class="month-chip green" type="button" data-open-drawer="gym">Pull 训练</button></div>
+
+              <div class="month-day"><div class="day-number">2</div><button class="month-chip" type="button" data-open-drawer="code">实体模型整理</button></div>
+              <div class="month-day"><div class="day-number">3</div><button class="month-chip green" type="button" data-open-drawer="gym">Push 训练</button></div>
+              <div class="month-day"><div class="day-number">4</div><button class="month-chip gold" type="button" data-open-drawer="review">日回顾</button></div>
+              <div class="month-day"><div class="day-number">5</div><button class="month-chip red" type="button" data-open-drawer="code">编码改期</button></div>
+              <div class="month-day"><div class="day-number">6</div><button class="month-chip" type="button" data-open-drawer="code">页面线框</button></div>
+              <div class="month-day"><div class="day-number">7</div></div>
+              <div class="month-day"><div class="day-number">8</div><button class="month-chip green" type="button" data-open-drawer="gym">Legs 训练</button></div>
+
+              <div class="month-day"><div class="day-number">9</div><button class="month-chip" type="button" data-open-drawer="code">任务拆解</button></div>
+              <div class="month-day"><div class="day-number">10</div><button class="month-chip green" type="button" data-open-drawer="gym">Pull 训练</button></div>
+              <div class="month-day"><div class="day-number">11</div><button class="month-chip gold" type="button" data-open-drawer="review">周中回顾</button></div>
+              <div class="month-day"><div class="day-number">12</div><button class="month-chip" type="button" data-open-drawer="code">小律能力设计</button></div>
+              <div class="month-day"><div class="day-number">13</div><button class="month-chip red" type="button" data-open-drawer="gym">训练改期</button></div>
+              <div class="month-day"><div class="day-number">14</div><button class="month-chip green" type="button" data-open-drawer="gym">Push 补练</button></div>
+              <div class="month-day"><div class="day-number">15</div><button class="month-chip" type="button" data-open-drawer="code">实体模型整理</button><button class="month-chip gold" type="button" data-open-drawer="review">文档归档</button></div>
+
+              <div class="month-day"><div class="day-number">16</div><button class="month-chip green" type="button" data-open-drawer="gym">Pull 训练</button></div>
+              <div class="month-day"><div class="day-number">17</div><button class="month-chip" type="button" data-open-drawer="code">页面线框</button><button class="month-chip gold" type="button" data-open-drawer="review">低阻力整理</button></div>
+              <div class="month-day is-today"><div class="day-number">18</div><button class="month-chip" type="button" data-open-drawer="code">数据结构草稿</button><button class="month-chip gold" type="button" data-open-drawer="review">MVP 反馈</button><button class="month-chip green waiting" type="button" data-open-drawer="gym">Push 训练</button></div>
+              <div class="month-day"><div class="day-number">19</div><button class="month-chip gold" type="button" data-open-drawer="review">周中回顾</button><button class="month-chip" type="button" data-open-drawer="code">自由编码</button></div>
+              <div class="month-day"><div class="day-number">20</div><button class="month-chip" type="button" data-open-drawer="code">任务拆解</button></div>
+              <div class="month-day"><div class="day-number">21</div><button class="month-chip green" type="button" data-open-drawer="gym">Legs 训练</button><button class="month-chip gold" type="button" data-open-drawer="review">周回顾</button></div>
+              <div class="month-day"><div class="day-number">22</div></div>
+
+              <div class="month-day"><div class="day-number">23</div><button class="month-chip" type="button" data-open-drawer="code">后端数据模型</button></div>
+              <div class="month-day"><div class="day-number">24</div><button class="month-chip green" type="button" data-open-drawer="gym">Push 训练</button></div>
+              <div class="month-day"><div class="day-number">25</div><button class="month-chip" type="button" data-open-drawer="code">小律浮窗实现</button></div>
+              <div class="month-day"><div class="day-number">26</div><button class="month-chip gold" type="button" data-open-drawer="review">日回顾</button></div>
+              <div class="month-day"><div class="day-number">27</div><button class="month-chip" type="button" data-open-drawer="code">部署验证</button></div>
+              <div class="month-day"><div class="day-number">28</div></div>
+              <div class="month-day"><div class="day-number">29</div><button class="month-chip green" type="button" data-open-drawer="gym">Pull 训练</button></div>
+
+              <div class="month-day"><div class="day-number">30</div><button class="month-chip gold" type="button" data-open-drawer="review">月末复盘</button></div>
+              <div class="month-day muted-day"><div class="day-number">1</div></div>
+              <div class="month-day muted-day"><div class="day-number">2</div></div>
+              <div class="month-day muted-day"><div class="day-number">3</div></div>
+              <div class="month-day muted-day"><div class="day-number">4</div></div>
+              <div class="month-day muted-day"><div class="day-number">5</div></div>
+                <div class="month-day muted-day"><div class="day-number">6</div></div>
+              </div>
+            </div>
+          </section>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
+  <aside class="drawer" id="drawer" aria-label="日程块详情">
+    <div class="drawer-head">
+      <div><h2 class="page-title" id="drawerTitle">日程块</h2><p class="page-caption" id="drawerMeta">关联任务与目标</p></div>
+      <button class="icon-button" type="button" id="closeDrawer" title="关闭">X</button>
+    </div>
+    <section class="section">
+      <div class="section-header"><h3>关联关系</h3></div>
+      <div class="list">
+        <div class="list-item"><div class="list-item-title"><span>关联目标</span><span id="drawerGoal">Rhythm & Routine MVP</span></div></div>
+        <div class="list-item"><div class="list-item-title"><span>关联任务</span><span id="drawerTask">设计日程块数据结构</span></div></div>
+        <div class="list-item"><div class="list-item-title"><span>灵活度</span><span class="pill">可调整</span></div></div>
+      </div>
+    </section>
+    <section class="section">
+      <div class="section-header"><h3>执行记录</h3></div>
+      <div class="list">
+        <div class="list-item"><div class="list-item-title"><span>状态</span><span id="drawerStatus">已完成</span></div></div>
+        <div class="list-item"><div class="list-item-title"><span>计划 / 实际</span><span><span id="drawerPlanned">90m</span> / <span id="drawerActual">85m</span></span></div></div>
+        <div class="list-item"><div class="list-item-title"><span>偏差原因</span><span id="drawerReason">无</span></div></div>
+      </div>
+    </section>
+    <section class="section">
+      <div class="section-header"><h3>节奏反馈</h3></div>
+      <div class="feedback-options">
+        <button type="button">顺畅</button><button type="button">有阻力</button><button type="button">勉强完成</button><button type="button">状态很好</button><button type="button">状态很差</button><button type="button">被打断</button><button type="button">没开始</button>
+      </div>
+      <p class="muted" id="drawerFeedback">顺畅；上午高专注任务推进顺利。</p>
+      <textarea rows="4" placeholder="可选：补充一句自然语言感受"></textarea>
+    </section>
+    <section class="section">
+      <div class="section-header"><h3>确认操作</h3></div>
+      <div class="feedback-options">
+        <button type="button">完成</button><button type="button">未完成</button><button type="button">改期</button><a class="text-button" href="task-detail.html">查看任务</a>
+      </div>
+    </section>
+  </aside>
+
+  <button class="agent-fab" type="button" id="agentFab" title="打开小律">律</button>
+  <section class="agent-panel" id="agentPanel" aria-label="小律">
+    <div class="agent-head"><div><strong>小律</strong><div class="muted">同一条对话流，按需清空上下文</div></div><div class="agent-actions"><button class="icon-button" type="button" id="clearContext" title="清空上下文">↺</button><button class="icon-button" type="button" id="toggleAgentFullscreen" title="全屏">□</button><button class="icon-button" type="button" id="closeAgent" title="收起">X</button></div></div>
+    <div class="agent-skills"><div class="skill-list"><button class="skill-button" type="button"><span>↻</span><span>调整日程</span></button><button class="skill-button" type="button"><span>▦</span><span>拆分任务</span></button><button class="skill-button" type="button"><span>✓</span><span>生成回顾</span></button><button class="skill-button" type="button"><span>?</span><span>解释计划</span></button></div></div>
+    <div class="agent-body"><div class="message">我会读取当前日程上下文。你可以让我调整今天的日程、解释某个时间块，或生成本周回顾。</div><div class="message user">今天 Push 训练如果做不了，帮我看看怎么调整。</div><div class="message">建议先确认是否还想本周完成 Push。如果是，我可以把它移动到周四晚上，并把周四深度写作改成低阻力整理任务。</div></div>
+    <div class="agent-input"><button class="icon-button" type="button" id="toggleSkillMenu" title="选择意图">+</button><input aria-label="输入给小律的消息" placeholder="输入请求..." /><button class="text-button primary" type="button">发送</button></div>
+  </section>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>回顾 - Rhythm & Routine</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div><h1 class="brand-title">Rhythm & Routine</h1><p class="brand-subtitle">AI Native 目标推进系统</p></div>
+      <nav class="nav">
+        <a href="schedule.html"><span class="keycap">S</span><span>日程</span></a>
+        <a href="goals.html"><span class="keycap">G</span><span>目标</span></a>
+        <a class="active" href="review.html"><span class="keycap">R</span><span>回顾</span></a>
+      </nav>
+      <div class="sidebar-note"><strong>回顾页负责</strong><div class="muted">回顾、节奏信号、用户确认、调整建议。</div></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div><h2 class="page-title">回顾</h2><p class="page-caption">执行历程、节奏反馈与用户确认</p></div>
+      </header>
+
+      <div class="content">
+        <div class="toolbar">
+          <div class="segmented" data-tab-group="review">
+            <button class="active" data-tab-target="dailyReview" type="button">日回顾</button>
+            <button data-tab-target="weeklyReview" type="button">周回顾</button>
+          </div>
+          <button class="text-button primary" type="button">生成回顾</button>
+        </div>
+
+        <section id="dailyReview" data-tab-panel="review" class="page-grid">
+          <div class="page-stack">
+            <section class="section">
+              <div class="section-header"><div><h2>日回顾</h2><div class="muted">今天执行了什么，感受如何，是否需要轻量调整。</div></div><span class="pill green">今日</span></div>
+              <div class="metrics">
+                <div class="metric"><div class="metric-value">2</div><div class="muted">完成日程块</div></div>
+                <div class="metric"><div class="metric-value">1</div><div class="muted">待反馈</div></div>
+                <div class="metric"><div class="metric-value">1</div><div class="muted">建议调整</div></div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-header"><h2>今日节奏反馈</h2></div>
+              <div class="list">
+                <div class="list-item"><div class="list-item-title"><span>设计日程块数据结构</span><span class="pill green">顺畅</span></div><div class="muted">上午高专注任务推进顺利。</div></div>
+                <div class="list-item"><div class="list-item-title"><span>整理 MVP 页面结构反馈</span><span class="pill">中专注</span></div><div class="muted">适合下午做信息整理和收尾。</div></div>
+                <div class="list-item"><div class="list-item-title"><span>Push 训练</span><span class="pill gold">待填写</span></div><div class="muted">完成后选择感受标签，可补充一句自然语言。</div></div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="side-stack">
+            <section class="section">
+              <div class="section-header"><h3>今日小律建议</h3></div>
+              <div class="list">
+                <div class="list-item"><div class="list-item-title"><span>晚间训练后不要安排深度写作</span><span class="pill blue">判断</span></div><div class="muted">如果 Push 完成，建议把 21:00 的编码整理改成低阻力文档收尾。</div></div>
+                <div class="list-item"><div class="list-item-title"><span>是否重排今晚</span><span class="pill gold">待确认</span></div><div class="muted">确认后才会修改日程块。</div></div>
+              </div>
+            </section>
+          </aside>
+        </section>
+
+        <section id="weeklyReview" data-tab-panel="review" class="page-grid" hidden>
+          <div class="page-stack">
+            <section class="section">
+              <div class="section-header"><div><h2>周回顾</h2><div class="muted">系统呈现执行历程，用户确认目标推进状态。</div></div><span class="pill green">每周</span></div>
+              <div class="metrics">
+                <div class="metric"><div class="metric-value">11</div><div class="muted">完成日程块</div></div>
+                <div class="metric"><div class="metric-value">3</div><div class="muted">改期日程块</div></div>
+                <div class="metric"><div class="metric-value">6</div><div class="muted">顺畅反馈</div></div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-header"><h2>用户确认</h2></div>
+              <div class="list">
+                <div class="list-item">
+                  <div class="list-item-title"><span>MVP 闭环与实体模型设计</span><span class="pill gold">待确认</span></div>
+                  <div class="muted">小律建议：可以检查是否确认完成。最终状态由你确认。</div>
+                  <div class="feedback-options"><button type="button">确认完成</button><button type="button">继续推进</button><button type="button">需要返工</button></div>
+                </div>
+                <div class="list-item">
+                  <div class="list-item-title"><span>健身体型与能力目标</span><span class="pill">阶段观察</span></div>
+                  <div class="muted">本周完成 2 次训练，是否认为训练节奏正在推进目标，由你在周回顾中判断。</div>
+                  <div class="feedback-options"><button type="button">推进顺利</button><button type="button">需要调整</button></div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="side-stack">
+            <section class="section">
+              <div class="section-header"><h3>节奏信号</h3></div>
+              <div class="list">
+                <div class="list-item"><div class="list-item-title"><span>上午深度任务</span><span class="pill green">顺畅</span></div><div class="muted">设计和写代码类任务更适合上午安排。</div></div>
+                <div class="list-item"><div class="list-item-title"><span>训练后深度写作</span><span class="pill red">有阻力</span></div><div class="muted">力量训练后更适合整理或低阻力任务。</div></div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-header"><h3>下周调整建议</h3></div>
+              <div class="list">
+                <div class="list-item"><div class="list-item-title"><span>保留上午深度编码窗口</span><span class="pill blue">建议</span></div><div class="muted">周一、周三、周四上午优先安排高专注任务。</div></div>
+                <div class="list-item"><div class="list-item-title"><span>训练后避免高强度脑力任务</span><span class="pill blue">建议</span></div><div class="muted">训练后的晚间安排回顾或整理类任务。</div></div>
+                <div class="feedback-options"><button type="button">确认应用</button><button type="button">让小律修改</button></div>
+              </div>
+            </section>
+          </aside>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <button class="agent-fab" type="button" id="agentFab" title="打开小律">律</button>
+  <section class="agent-panel" id="agentPanel" aria-label="小律">
+    <div class="agent-head"><div><strong>小律</strong><div class="muted">同一条对话流，按需清空上下文</div></div><div class="agent-actions"><button class="icon-button" type="button" id="clearContext" title="清空上下文">↺</button><button class="icon-button" type="button" id="toggleAgentFullscreen" title="全屏">□</button><button class="icon-button" type="button" id="closeAgent" title="收起">X</button></div></div>
+    <div class="agent-skills"><div class="skill-list"><button class="skill-button" type="button"><span>✓</span><span>生成回顾</span></button><button class="skill-button" type="button"><span>↻</span><span>调整下周</span></button><button class="skill-button" type="button"><span>?</span><span>解释建议</span></button></div></div>
+    <div class="agent-body"><div class="message">我会基于本周执行记录、节奏反馈和你确认的目标状态，生成下周调整建议。</div><div class="context-divider">上下文已清空，后续对话从当前页面重新开始</div></div>
+    <div class="agent-input"><button class="icon-button" type="button" id="toggleSkillMenu" title="选择意图">+</button><input aria-label="输入给小律的消息" placeholder="输入请求..." /><button class="text-button primary" type="button">发送</button></div>
+  </section>
+  <script src="app.js"></script>
+</body>
+</html>
