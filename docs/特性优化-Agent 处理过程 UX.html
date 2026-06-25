@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rhythm & Routine - Agent 执行过程原型</title>
+  <style>
+    :root {
+      --bg: #f8f5fb;
+      --panel: #ffffff;
+      --text: #282436;
+      --muted: #81788f;
+      --soft-muted: #a79db3;
+      --primary: #755aa7;
+      --primary-weak: #efe8fb;
+      --border: #ece6f2;
+      --success: #5e9a7b;
+      --warning: #c99546;
+      --danger: #c56b73;
+      --bubble-user: #7659a8;
+      --bubble-agent: #ffffff;
+      --shadow: 0 18px 48px rgba(54, 38, 84, .16);
+      --radius-xl: 22px;
+      --radius-lg: 18px;
+      --radius-md: 14px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(132, 100, 186, .18), transparent 32%),
+        linear-gradient(180deg, #fbf8ff 0%, #f3edf8 100%);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 16px;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: 390px 440px;
+      gap: 28px;
+      align-items: start;
+      width: min(100%, 900px);
+    }
+
+    .phone {
+      width: 390px;
+      height: 760px;
+      background: var(--bg);
+      border: 1px solid rgba(105, 77, 145, .18);
+      border-radius: 34px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      position: relative;
+    }
+
+    .statusbar {
+      height: 22px;
+      background: rgba(255,255,255,.55);
+    }
+
+    .header {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 18px;
+      position: relative;
+      border-bottom: 1px solid rgba(226, 216, 237, .7);
+      background: rgba(255, 255, 255, .72);
+      backdrop-filter: blur(14px);
+    }
+
+    .header .title {
+      font-size: 15px;
+      font-weight: 650;
+      letter-spacing: .02em;
+    }
+
+    .header .sub {
+      position: absolute;
+      right: 18px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .chat {
+      height: calc(100% - 78px);
+      overflow-y: auto;
+      padding: 18px 14px 24px;
+    }
+
+    .date-line {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 2px 0 14px;
+      color: #b3a8bf;
+      font-size: 12px;
+    }
+
+    .date-line::before,
+    .date-line::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: #e5ddea;
+    }
+
+    .bubble {
+      max-width: 86%;
+      padding: 12px 14px;
+      border-radius: 18px;
+      font-size: 14px;
+      line-height: 1.62;
+      margin-bottom: 14px;
+    }
+
+    .bubble.user {
+      margin-left: auto;
+      background: var(--bubble-user);
+      color: #fff;
+      border-bottom-right-radius: 8px;
+    }
+
+    .bubble.agent {
+      margin-right: auto;
+      background: var(--bubble-agent);
+      color: #3a3446;
+      border: 1px solid rgba(230, 223, 238, .8);
+      border-bottom-left-radius: 8px;
+      box-shadow: 0 8px 24px rgba(52, 36, 72, .05);
+    }
+
+    .bubble.agent strong {
+      color: #4d3d73;
+    }
+
+    .process-card {
+      width: 86%;
+      background: rgba(255, 255, 255, .82);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      margin: 8px 0 16px;
+      overflow: hidden;
+      box-shadow: 0 6px 18px rgba(50, 35, 74, .035);
+    }
+
+    .process-head {
+      width: 100%;
+      appearance: none;
+      border: 0;
+      background: transparent;
+      padding: 13px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      color: var(--text);
+      font-family: inherit;
+    }
+
+    .process-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .process-title .spark {
+      width: 18px;
+      height: 18px;
+      border-radius: 7px;
+      background: var(--primary-weak);
+      color: var(--primary);
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+    }
+
+    .process-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .chev {
+      transform: rotate(0deg);
+      transition: transform .2s ease;
+      color: #9f93ad;
+    }
+
+    .process-card.open .chev { transform: rotate(180deg); }
+
+    .process-body {
+      display: none;
+      padding: 0 12px 12px;
+    }
+
+    .process-card.open .process-body { display: block; }
+
+    .step {
+      border: 1px solid #eee8f4;
+      background: rgba(252, 250, 255, .72);
+      border-radius: 15px;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+
+    .step-toggle {
+      width: 100%;
+      appearance: none;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      padding: 11px 12px;
+      display: grid;
+      grid-template-columns: 22px 1fr 14px;
+      gap: 8px;
+      align-items: start;
+      text-align: left;
+      font-family: inherit;
+    }
+
+    .icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      margin-top: 1px;
+      color: white;
+      background: var(--success);
+    }
+
+    .icon.confirm { background: var(--warning); }
+    .icon.running {
+      background: var(--primary);
+      animation: pulse 1.4s infinite;
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(117, 90, 167, .32); }
+      80% { box-shadow: 0 0 0 8px rgba(117, 90, 167, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(117, 90, 167, 0); }
+    }
+
+    .step-main { min-width: 0; }
+
+    .step-title {
+      font-size: 13px;
+      font-weight: 620;
+      color: #40384d;
+      margin-bottom: 3px;
+    }
+
+    .step-summary {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .mini-chev {
+      color: #b5aabd;
+      font-size: 12px;
+      margin-top: 2px;
+      transform: rotate(0deg);
+      transition: transform .18s ease;
+    }
+
+    .step.open .mini-chev { transform: rotate(90deg); }
+
+    .step-detail {
+      display: none;
+      padding: 0 12px 12px 42px;
+      color: #665c71;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .step.open .step-detail { display: block; }
+
+    .detail-block {
+      padding: 9px 10px;
+      border-radius: 12px;
+      background: #fff;
+      border: 1px solid #eee8f4;
+    }
+
+    .detail-block p { margin: 0 0 7px; }
+    .detail-block p:last-child { margin-bottom: 0; }
+    .detail-label { color: #9589a0; }
+
+    .quick-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .quick-actions button {
+      border: 1px solid #ded5eb;
+      background: #fff;
+      color: #5c4a81;
+      border-radius: 999px;
+      padding: 8px 11px;
+      font-size: 12px;
+      font-family: inherit;
+    }
+
+    .input-bar {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      height: 46px;
+      background: rgba(255,255,255,.9);
+      border: 1px solid #e8e1ef;
+      border-radius: 23px;
+      display: flex;
+      align-items: center;
+      padding: 0 12px 0 16px;
+      color: #aaa0b4;
+      font-size: 13px;
+      box-shadow: 0 10px 30px rgba(55, 38, 80, .08);
+    }
+
+    .send {
+      margin-left: auto;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 14px;
+    }
+
+    .notes {
+      background: rgba(255,255,255,.78);
+      border: 1px solid rgba(226, 216, 237, .85);
+      border-radius: 26px;
+      padding: 24px;
+      box-shadow: 0 14px 42px rgba(54, 38, 84, .1);
+    }
+
+    .notes h1 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      line-height: 1.3;
+    }
+
+    .notes .lead {
+      color: var(--muted);
+      line-height: 1.75;
+      margin: 0 0 22px;
+      font-size: 14px;
+    }
+
+    .spec-section {
+      border-top: 1px solid #eee7f4;
+      padding-top: 18px;
+      margin-top: 18px;
+    }
+
+    .spec-section h2 {
+      font-size: 15px;
+      margin: 0 0 10px;
+      color: #4b3f60;
+    }
+
+    .spec-section ul {
+      margin: 0;
+      padding-left: 18px;
+      color: #6d6378;
+      font-size: 13px;
+      line-height: 1.8;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .tag {
+      font-size: 12px;
+      color: #6b548f;
+      background: #f0e9fb;
+      border: 1px solid #e3d7f2;
+      padding: 6px 10px;
+      border-radius: 999px;
+    }
+
+    @media (max-width: 880px) {
+      body { align-items: flex-start; }
+      .page {
+        grid-template-columns: 1fr;
+        justify-items: center;
+      }
+      .notes { width: min(390px, 100%); }
+    }
+
+    @media (max-width: 430px) {
+      body { padding: 0; }
+      .page { display: block; width: 100%; }
+      .phone {
+        width: 100%;
+        height: 100vh;
+        border-radius: 0;
+        border: 0;
+      }
+      .notes { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="phone" aria-label="Rhythm and Routine mobile prototype">
+      <div class="statusbar"></div>
+      <header class="header">
+        <div class="title">Rhythm & Routine</div>
+        <div class="sub">Agent</div>
+      </header>
+
+      <div class="chat">
+        <div class="date-line">以上不在上下文中</div>
+
+        <div class="bubble user">帮我删除今天晚上的健身日程。</div>
+
+        <section class="process-card open" id="processCard">
+          <button class="process-head" onclick="toggleProcess()" aria-expanded="true">
+            <span class="process-title"><span class="spark">✦</span>处理过程</span>
+            <span class="process-meta"><span>已完成 3 步，等待确认</span><span class="chev">⌃</span></span>
+          </button>
+
+          <div class="process-body">
+            <article class="step" onclick="toggleStep(this)">
+              <button class="step-toggle">
+                <span class="icon">✓</span>
+                <span class="step-main">
+                  <span class="step-title">回顾最近的执行记录</span>
+                  <span class="step-summary">找到 2 条相关记录，用于确认近期是否已有健身操作。</span>
+                </span>
+                <span class="mini-chev">›</span>
+              </button>
+              <div class="step-detail">
+                <div class="detail-block">
+                  <p><span class="detail-label">检查范围：</span>最近的执行记录</p>
+                  <p><span class="detail-label">检查结果：</span>没有发现今天已完成的删除操作。</p>
+                  <p><span class="detail-label">下一步：</span>继续检查今天的日程安排。</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="step open" onclick="toggleStep(this)">
+              <button class="step-toggle">
+                <span class="icon">✓</span>
+                <span class="step-main">
+                  <span class="step-title">检查今天的日程安排</span>
+                  <span class="step-summary">今天晚上暂无已安排的健身日程。</span>
+                </span>
+                <span class="mini-chev">›</span>
+              </button>
+              <div class="step-detail">
+                <div class="detail-block">
+                  <p><span class="detail-label">检查范围：</span>今天的日程安排</p>
+                  <p><span class="detail-label">检查结果：</span>没有发现晚上 20:00 的健身时间块。</p>
+                  <p><span class="detail-label">简短判断：</span>你提到的“今晚健身日程”可能不是一个已写入日历的具体事件。</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="step" onclick="toggleStep(this)">
+              <button class="step-toggle">
+                <span class="icon">✓</span>
+                <span class="step-main">
+                  <span class="step-title">参考目标与 Routine 设定</span>
+                  <span class="step-summary">找到周一、三、五晚上 20:00 的健身规则。</span>
+                </span>
+                <span class="mini-chev">›</span>
+              </button>
+              <div class="step-detail">
+                <div class="detail-block">
+                  <p><span class="detail-label">检查范围：</span>与健身相关的目标和 Routine</p>
+                  <p><span class="detail-label">检查结果：</span>当前存在固定训练规则，但今天不是该规则对应的训练日。</p>
+                  <p><span class="detail-label">下一步：</span>需要确认是删除单次安排，还是修改整个重复规则。</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="step" onclick="toggleStep(this)">
+              <button class="step-toggle">
+                <span class="icon confirm">?</span>
+                <span class="step-main">
+                  <span class="step-title">等待你确认</span>
+                  <span class="step-summary">需要确认删除对象是单次安排还是整个 Routine。</span>
+                </span>
+                <span class="mini-chev">›</span>
+              </button>
+              <div class="step-detail">
+                <div class="detail-block">
+                  <p><span class="detail-label">为什么需要确认：</span>当前没有找到今天晚上的具体日程块，直接删除可能会误删 Routine 规则。</p>
+                  </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <div class="bubble agent">
+          我看了一下今天（6 月 21 日，周日）的日程安排，目前没有发现今天晚上已经安排的健身时间块。<br><br>
+          不过我参考了你的 <strong>Routine 设定</strong>，发现当前健身规则是：<br>
+          <strong>健身房训练</strong>：周一、三、五晚上 20:00<br>
+          <strong>跑步训练</strong>：隔周周二晚上 20:00<br><br>
+          所以今天晚上可能没有具体健身日程。你想删除的是今天某一次临时安排，还是调整整个 Routine 规则？
+
+          
+        </div>
+
+
+      </div>
+
+      <div class="input-bar">
+        输入你的安排或调整需求
+        <div class="send">↑</div>
+      </div>
+    </section>
+
+    <aside class="notes">
+      <h1>Agent 执行过程交互原型</h1>
+      <p class="lead">
+        这个原型把真实工具调用包装成用户可理解的“处理过程”，并放在最终回复气泡之前。过程区域用于表达 Agent 正在处理什么，最终回复承接结果并给出结论。
+      </p>
+
+      <div class="tag-row">
+        <span class="tag">轻量过程提示</span>
+        <span class="tag">默认摘要</span>
+        <span class="tag">点击展开详情</span>
+        <span class="tag">自然语言追问</span>
+      </div>
+
+      <section class="spec-section">
+        <h2>交互重点</h2>
+        <ul>
+          <li>执行过程位于最终回复之前，但视觉权重低于最终回复。</li>
+          <li>统一收拢为“处理过程”，避免像开发调试日志或回答后的附录。</li>
+          <li>步骤标题使用“检查 / 回顾 / 参考 / 等待确认”等用户化表达。</li>
+          <li>每一步默认只显示一句摘要，点击后再展示检查范围、结果和简短判断。</li>
+        </ul>
+      </section>
+
+      <section class="spec-section">
+        <h2>可直接给 Coding Agent 的方向</h2>
+        <ul>
+          <li>不要改变真实 Tool Call，只改展示层的包装与映射。</li>
+          <li>普通用户不展示 tool name、参数、JSON、数据库字段。</li>
+          <li>当信息不足时，主回复中自然语言追问，过程区域只辅助标记“等待确认”。</li>
+        </ul>
+      </section>
+    </aside>
+  </main>
+
+  <script>
+    function toggleProcess() {
+      const card = document.getElementById('processCard');
+      card.classList.toggle('open');
+      const btn = card.querySelector('.process-head');
+      btn.setAttribute('aria-expanded', card.classList.contains('open'));
+    }
+
+    function toggleStep(step) {
+      step.classList.toggle('open');
+    }
+  </script>
+</body>
+</html>

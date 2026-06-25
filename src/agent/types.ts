@@ -17,6 +17,35 @@ export type AgentRunStatus =
 
 export type ToolRisk = "read" | "draft_write" | "system";
 
+export type LoopGoalStatus =
+  | "achieved"
+  | "needs_more_action"
+  | "needs_user_input"
+  | "awaiting_confirmation"
+  | "blocked";
+
+export type LoopNextAction =
+  | "call_tool"
+  | "retry_tool"
+  | "switch_tool"
+  | "ask_user"
+  | "propose_change_set"
+  | "final_answer"
+  | "stop";
+
+export type AgentExitReason =
+  | "goal_achieved"
+  | "awaiting_user_confirmation"
+  | "awaiting_user_input"
+  | "blocked_by_missing_information"
+  | "blocked_by_tool_error"
+  | "stopped_by_max_steps"
+  | "stopped_by_max_retries"
+  | "stopped_by_token_budget"
+  | "stopped_by_time_budget"
+  | "cancelled_by_user"
+  | "runtime_error";
+
 export type ContextReference = {
   entityType: string;
   entityId: string;
@@ -95,6 +124,7 @@ export type ToolExecutionContext = {
 
 export type RunEvent =
   | { type: "run_started"; runId: string }
+  | { type: "loop_step"; kind: "planning" | "verification" | "decision" | "final" | "recovery"; label: string; summary?: string; goalStatus?: LoopGoalStatus; nextAction?: LoopNextAction; detail?: { scope?: string; result?: string; judgment?: string; nextAction?: string; missingInformation?: string[] } }
   | { type: "text_delta"; text: string }
   | { type: "model_fallback"; from: string; to: string; reason: string }
   | { type: "tool_started"; tool: string }

@@ -121,6 +121,7 @@ draft | awaiting_confirmation | approved | rejected | applied | failed
 - Routine 保存重复规则，不预生成未来任务。`startDate` / `endDate` 表达有效期，`recurrenceRule` 表达重复日期，`preferredStartTime` / `preferredEndTime` 表达建议时间窗，`durationMinutes` 表达一次执行的预计时长。
 - `description` 只说明为什么值得保持；`minimumVersion` 只描述状态不佳时仍可执行的退阶动作，例如“只练 5 分钟”。时间段、频率和有效期不得写入这两个字段。
 - Routine 在查询日历范围时动态产生虚拟发生实例；只有执行、跳过或改期后才持久化对应的执行记录。
+- Routine 页面右侧详情提供有效期与开启状态快捷操作：用户可直接修改 `startDate` / `endDate`，并在 `active` 与 `paused` 间切换。保存后重新读取当前日历窗口，关闭或缩短有效期会删除/隐藏未来未发生的 planned Routine 实例；重新开启后按 Routine Definition 重新展开后续实例。已有执行记录不因缩短有效期或暂停而删除。
 
 ## 5. 技术方案
 

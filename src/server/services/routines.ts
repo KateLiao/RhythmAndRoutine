@@ -16,6 +16,7 @@ export type ExpandedRoutineOccurrence = {
   status: "planned" | "completed" | "missed" | "rescheduled" | "cancelled";
   version: number;
   source: "routine_occurrence";
+  blockKind: "routine_occurrence";
   displayMode: string;
   executionRecord?: { result: string; actualMinutes: number | null; rhythmFeedback: { tags: string[]; note: string | null } };
 };
@@ -52,6 +53,7 @@ export async function expandRoutineOccurrences(userId: string, from: Date, to: D
         status,
         version: routine.version,
         source: "routine_occurrence" as const,
+        blockKind: "routine_occurrence" as const,
         displayMode: routine.displayMode,
         ...(record && { executionRecord: { result: record.status, actualMinutes: record.actualMinutes, rhythmFeedback: { tags: record.feedbackTags, note: record.note } } }),
       };

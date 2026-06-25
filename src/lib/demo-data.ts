@@ -31,7 +31,7 @@ export type ScheduleItem = {
   goalId: string;
   start: string;
   end: string;
-  kind: "task" | "routine" | "review";
+  kind: "task" | "routine" | "review" | "personal";
   status: "completed" | "planned" | "missed" | "rescheduled" | "cancelled";
   energy: "high" | "medium" | "low";
   feedback?: string;

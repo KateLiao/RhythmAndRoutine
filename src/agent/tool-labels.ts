@@ -102,7 +102,16 @@ export function summarizeToolResult(tool: string, result: ToolResult): string {
   }
   if (tool === "read_schedule_window") {
     const count = Array.isArray(data) ? data.length : 0;
-    return count ? `找到 ${count} 条日程安排` : "当前窗口暂无已安排的日程";
+    if (!count) return "当前窗口暂无已安排的日程";
+    const items = data as Array<{ blockKind?: string; title?: string }>;
+    const personal = items.filter((item) => item.blockKind === "personal").length;
+    const goalTask = items.filter((item) => item.blockKind === "goal_task").length;
+    const routine = items.filter((item) => item.blockKind === "routine_occurrence").length;
+    const parts = [`共 ${count} 条`];
+    if (personal) parts.push(`${personal} 条个人占位`);
+    if (goalTask) parts.push(`${goalTask} 条目标日程`);
+    if (routine) parts.push(`${routine} 条 Routine 实例`);
+    return `找到 ${parts.join("，")}`;
   }
   if (tool === "read_execution_history") {
     const count = Array.isArray(data) ? data.length : 0;
@@ -153,7 +162,7 @@ export function buildToolStepDetail(
       ? `检查结果：共找到 ${count} 条日程安排。`
       : "检查结果：该时间窗口内暂无已写入日历的具体日程。";
     const judgment = count
-      ? "这些日程块代表已经安排好的具体时间，可与 Routine 规则区分看待。"
+      ? "日程块含 blockKind：personal=个人占位，goal_task=目标推进，routine_occurrence=Routine 展开实例；调整时请用匹配的 entity。"
       : "你提到的时间可能来自 Routine 规则、目标设定，或尚未创建的临时计划。";
     return { scope, result: resultText, judgment };
   }

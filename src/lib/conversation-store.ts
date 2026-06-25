@@ -13,6 +13,21 @@ const STORAGE_KEY = "rr.conversation.v1";
 /** 装载进 Agent 上下文的最大对话轮数（1 轮 = 1 用户 + 1 助手） */
 export const CONTEXT_WINDOW_TURNS = 6;
 
+/** 持久化的单条 Agent 处理步骤（与 UI 层 AgentProcessStep 结构兼容） */
+export type StoredProcessStep = {
+  id: string;
+  label: string;
+  status: "pending" | "running" | "done" | "failed" | "confirm";
+  summary?: string;
+  detail?: {
+    scope?: string;
+    result?: string;
+    judgment?: string;
+    nextAction?: string;
+    missingInformation?: string[];
+  };
+};
+
 /** 单条存储消息 */
 export type StoredMessage = {
   id: string;
@@ -20,6 +35,8 @@ export type StoredMessage = {
   text: string;
   /** ISO 8601 时间戳，用于与 contextClearedAt 比较 */
   timestamp: string;
+  /** Agent 处理过程步骤，仅 assistant 消息可能有；用于回看与调试 */
+  processSteps?: StoredProcessStep[];
 };
 
 /** Agent 上下文范围：用于检测目标切换并自动隔离历史对话 */
@@ -69,6 +86,19 @@ function save(data: ConversationData): void {
  */
 export function loadMessages(): StoredMessage[] {
   return load().messages;
+}
+
+/**
+ * 将内存中的处理步骤序列化为可持久化格式。
+ * 进行中的步骤在落盘时标记为已完成，避免刷新后仍显示「处理中」。
+ * @param steps - UI 层的处理步骤列表
+ */
+export function serializeProcessSteps(steps?: StoredProcessStep[]): StoredProcessStep[] | undefined {
+  if (!steps?.length) return undefined;
+  return steps.map((step) => ({
+    ...step,
+    status: step.status === "running" ? "done" : step.status,
+  }));
 }
 
 /**

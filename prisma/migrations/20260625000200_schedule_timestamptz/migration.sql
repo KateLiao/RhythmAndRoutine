@@ -1,0 +1,3 @@
+ALTER TABLE "ScheduleBlock"
+ALTER COLUMN "startsAt" TYPE TIMESTAMPTZ(3) USING "startsAt" AT TIME ZONE 'Asia/Shanghai',
+ALTER COLUMN "endsAt" TYPE TIMESTAMPTZ(3) USING "endsAt" AT TIME ZONE 'Asia/Shanghai';

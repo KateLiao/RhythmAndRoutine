@@ -485,6 +485,17 @@ AI 分析
 调整建议
 ```
 
+右侧详情区需要提供一组轻量快捷操作，覆盖用户最常见的 Routine 生命周期调整：
+
+```text
+开始日期
+结束日期（可为空）
+开启 / 暂停 Routine
+保存快捷设置
+```
+
+这些快捷操作修改的是 Routine Definition。保存后，日历窗口应基于新的 `startDate`、`endDate` 和 `status` 重新动态展开 Routine Occurrence：关闭或缩短有效期时，未来还没有发生的 planned Routine 实例需要删除或隐藏；重新开启后，后续实例按 Routine 的重复规则、开始时间和时长统一恢复。已经完成、跳过、改期或错过的执行记录继续保留，用于统计和 AI 分析。
+
 ---
 
 ## 八、Routine 统计数据

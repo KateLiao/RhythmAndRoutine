@@ -1,4 +1,4 @@
-import { GoalStatus, MilestoneStatus, RoutineStatus, TaskStatus } from "@/generated/prisma/enums";
+import { GoalStatus, MilestoneStatus, RoutineStatus, ScheduleBlockStatus, TaskStatus } from "@/generated/prisma/enums";
 import type { Prisma } from "@/generated/prisma/client";
 import { getDb } from "@/lib/db";
 import { DomainError } from "@/server/api-response";
@@ -157,14 +157,45 @@ export async function createRoutine(userId: string, goalId: string, raw: unknown
 
 export async function updateRoutine(userId: string, routineId: string, raw: unknown) {
   const input = updateRoutineSchema.parse(raw);
-  const result = await getDb().routine.updateMany({
-    where: { id: routineId, version: input.expectedVersion, archivedAt: null, goal: { userId } },
-    data: { ...(input.title !== undefined && { title: input.title }), ...(input.description !== undefined && { description: input.description }), ...(input.recurrenceRule !== undefined && { recurrenceRule: input.recurrenceRule }), ...(input.startDate !== undefined && { startDate: new Date(input.startDate) }), ...(input.endDate !== undefined && { endDate: input.endDate ? new Date(input.endDate) : null }), ...(input.durationMinutes !== undefined && { durationMinutes: input.durationMinutes }), ...(input.preferredStartTime !== undefined && { preferredStartTime: input.preferredStartTime }), ...(input.preferredEndTime !== undefined && { preferredEndTime: input.preferredEndTime }), ...(input.preferredTimeOfDay !== undefined && { preferredTimeOfDay: input.preferredTimeOfDay }), ...(input.priority !== undefined && { priority: input.priority }), ...(input.displayMode !== undefined && { displayMode: input.displayMode }), ...(input.minimumVersion !== undefined && { minimumVersion: input.minimumVersion }), ...(input.status !== undefined && { status: routineStatusMap[input.status] }), version: { increment: 1 } },
+  const result = await getDb().$transaction(async (tx) => {
+    const current = await tx.routine.findFirst({
+      where: { id: routineId, version: input.expectedVersion, archivedAt: null, goal: { userId } },
+      select: { id: true, startDate: true, endDate: true, status: true },
+    });
+    if (!current) return null;
+    const nextStatus = input.status !== undefined ? routineStatusMap[input.status] : current.status;
+    const nextStartDate = input.startDate !== undefined ? new Date(input.startDate) : current.startDate;
+    const nextEndDate = input.endDate !== undefined ? input.endDate ? new Date(input.endDate) : null : current.endDate;
+    await tx.routine.update({
+      where: { id: routineId },
+      data: { ...(input.title !== undefined && { title: input.title }), ...(input.description !== undefined && { description: input.description }), ...(input.recurrenceRule !== undefined && { recurrenceRule: input.recurrenceRule }), ...(input.startDate !== undefined && { startDate: nextStartDate }), ...(input.endDate !== undefined && { endDate: nextEndDate }), ...(input.durationMinutes !== undefined && { durationMinutes: input.durationMinutes }), ...(input.preferredStartTime !== undefined && { preferredStartTime: input.preferredStartTime }), ...(input.preferredEndTime !== undefined && { preferredEndTime: input.preferredEndTime }), ...(input.preferredTimeOfDay !== undefined && { preferredTimeOfDay: input.preferredTimeOfDay }), ...(input.priority !== undefined && { priority: input.priority }), ...(input.displayMode !== undefined && { displayMode: input.displayMode }), ...(input.minimumVersion !== undefined && { minimumVersion: input.minimumVersion }), ...(input.status !== undefined && { status: nextStatus }), version: { increment: 1 } },
+    });
+    await pruneFutureRoutineScheduleBlocks(tx, userId, routineId, { status: nextStatus, startDate: nextStartDate, endDate: nextEndDate });
+    return true;
   });
-  if (!result.count) throw new DomainError("VERSION_CONFLICT", "Routine 已经发生变化，请刷新后再保存。", 409);
+  if (!result) throw new DomainError("VERSION_CONFLICT", "Routine 已经发生变化，请刷新后再保存。", 409);
   const routine = await getDb().routine.findFirst({ where: { id: routineId, goal: { userId } } });
   if (!routine) throw new DomainError("ROUTINE_NOT_FOUND", "没有找到这个 Routine。", 404);
   return serializeRoutine(routine);
+}
+
+async function pruneFutureRoutineScheduleBlocks(tx: Prisma.TransactionClient, userId: string, routineId: string, next: { status: RoutineStatus; startDate: Date; endDate: Date | null }) {
+  const baseWhere = {
+    userId,
+    routineId,
+    deletedAt: null,
+    status: ScheduleBlockStatus.PLANNED,
+    startsAt: { gte: new Date() },
+    executionRecord: { is: null },
+  } satisfies Prisma.ScheduleBlockWhereInput;
+  const data = { deletedAt: new Date(), status: ScheduleBlockStatus.CANCELLED, changeReason: "Routine 设置变更，删除未发生实例", version: { increment: 1 } } satisfies Prisma.ScheduleBlockUpdateManyMutationInput;
+  if (next.status !== RoutineStatus.ACTIVE) {
+    await tx.scheduleBlock.updateMany({ where: baseWhere, data });
+    return;
+  }
+  const outsideRange: Prisma.ScheduleBlockWhereInput[] = [{ startsAt: { lt: next.startDate } }];
+  if (next.endDate) outsideRange.push({ startsAt: { gt: next.endDate } });
+  await tx.scheduleBlock.updateMany({ where: { ...baseWhere, OR: outsideRange }, data });
 }
 
 export async function archiveRoutine(userId: string, routineId: string, expectedVersion: number) {

@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db";
 import { DomainError } from "@/server/api-response";
 import type { ChangeSetDraft } from "@/domain/schemas";
 import { enrichChangeOperation, enrichChangeOperations, normalizeAgentChangePayload } from "@/lib/change-operation-display";
+import { inferScheduleBlockKind, isGoalScheduleEntity, isPersonalScheduleEntity } from "@/lib/schedule-block-kind";
 import { aggregateLinkedTaskStatuses, aggregateTaskStatus, rescheduleScheduleBlockTx } from "@/server/services/schedule";
 
 /**
@@ -80,7 +81,7 @@ export async function decideChangeSet(userId: string, id: string, approved: bool
   if (!changeSet) throw new DomainError("CHANGE_SET_NOT_FOUND", "这份变更草案已处理或不存在。", 404);
   if (!approved) return getDb().$transaction(async (tx) => {
     const rejected = await tx.changeSet.update({ where: { id }, data: { status: ChangeSetStatus.REJECTED, decidedAt: new Date() } });
-    if (changeSet.agentRunId) await tx.agentRun.update({ where: { id: changeSet.agentRunId }, data: { status: "CANCELLED", completedAt: new Date(), finalSummary: "用户拒绝了变更草案" } });
+    if (changeSet.agentRunId) await tx.agentRun.update({ where: { id: changeSet.agentRunId }, data: { status: "CANCELLED", exitReason: "cancelled_by_user", goalStatus: "blocked", completedAt: new Date() } });
     return rejected;
   });
   const allOperations = changeSet.operations as Array<Record<string, unknown>>;
@@ -100,7 +101,7 @@ export async function decideChangeSet(userId: string, id: string, approved: bool
     const references = new Map<string, string>();
     for (const operation of operations) await applyOperation(tx, userId, operation, references);
     await tx.changeSet.update({ where: { id }, data: { status: ChangeSetStatus.APPLIED, decisionNote: operations.length === allOperations.length ? "用户确认整份草案" : `用户确认 ${operations.length}/${allOperations.length} 项`, decidedAt: new Date(), appliedAt: new Date() } });
-    if (changeSet.agentRunId) await tx.agentRun.update({ where: { id: changeSet.agentRunId }, data: { status: "COMPLETED", completedAt: new Date(), finalSummary: "用户已确认并应用变更草案" } });
+    if (changeSet.agentRunId) await tx.agentRun.update({ where: { id: changeSet.agentRunId }, data: { status: "COMPLETED", exitReason: "goal_achieved", goalStatus: "achieved", completedAt: new Date() } });
   });
   return getDb().changeSet.findUniqueOrThrow({ where: { id } });
 }
@@ -158,8 +159,14 @@ async function readEntitySnapshot(entity: string, id: string): Promise<Record<st
     return routine ? { ...routine, startDate: routine.startDate.toISOString(), endDate: routine.endDate?.toISOString() } : null;
   }
   if (name.includes("schedule")) {
-    const block = await getDb().scheduleBlock.findUnique({ where: { id }, select: { title: true, startsAt: true, endsAt: true, version: true } });
-    return block ? { title: block.title, startsAt: block.startsAt.toISOString(), endsAt: block.endsAt.toISOString(), version: block.version } : null;
+    const block = await getDb().scheduleBlock.findUnique({ where: { id }, select: { title: true, startsAt: true, endsAt: true, goalId: true, taskId: true, routineId: true, source: true, version: true } });
+    return block ? {
+      title: block.title,
+      startsAt: block.startsAt.toISOString(),
+      endsAt: block.endsAt.toISOString(),
+      blockKind: inferScheduleBlockKind(block),
+      version: block.version,
+    } : null;
   }
   if (name.includes("outcome")) {
     const outcome = await getDb().outcome.findUnique({ where: { id }, select: { description: true, version: true } });
@@ -203,17 +210,36 @@ async function applyOperation(tx: Prisma.TransactionClient, userId: string, oper
     const goalId = resolve(payload.goalId ?? payload.goalRef) ?? ""; await assertGoal(tx, userId, goalId);
     const created = await tx.routine.create({ data: { goalId, title: String(payload.title ?? "新 Routine"), description: optionalString(payload.reason ?? payload.description), recurrenceRule: String(payload.recurrenceRule ?? "FREQ=DAILY"), startDate: optionalDate(payload.startDate) ?? new Date(), endDate: optionalDate(payload.endDate), durationMinutes: optionalNumber(payload.durationMinutes ?? payload.targetMinutes) ?? 20, preferredStartTime: optionalString(payload.preferredStartTime), preferredEndTime: optionalString(payload.preferredEndTime), preferredTimeOfDay: optionalString(payload.preferredTimeOfDay ?? payload.preferredTime), priority: optionalString(payload.priority) ?? "medium", displayMode: optionalString(payload.displayMode) ?? "subtle", minimumVersion: optionalString(payload.minimumVersion), status: RoutineStatus.ACTIVE } }); remember(created.id); return;
   }
-  if (type === "create" && entity.includes("schedule")) {
-    const goalId = resolve(payload.goalId ?? payload.goalRef); if (goalId) await assertGoal(tx, userId, goalId);
-    const startsAt = parseScheduleDate(payload, "start", "startsAt"); const endsAt = parseScheduleDate(payload, "end", "endsAt");
-    const taskId = resolve(payload.taskId ?? payload.taskRef); const routineId = resolve(payload.routineId ?? payload.routineRef);
-    await tx.scheduleBlock.create({ data: { userId, goalId, taskId, routineId, title: String(payload.title ?? "新安排"), startsAt, endsAt, source: "agent" } });
-    if (taskId) await aggregateTaskStatus(tx, taskId); return;
+  if (type === "create" && isPersonalScheduleEntity(entity, payload)) {
+    assertPersonalSchedulePayload(payload);
+    const startsAt = parseScheduleDate(payload, "start", "startsAt");
+    const endsAt = parseScheduleDate(payload, "end", "endsAt");
+    assertValidScheduleRange(startsAt, endsAt);
+    await tx.scheduleBlock.create({ data: { userId, title: String(payload.title ?? "个人日程"), startsAt, endsAt, source: "agent" } });
+    return;
   }
-  if (type === "update" && entity.includes("schedule")) {
+  if (type === "create" && isGoalScheduleEntity(entity, payload)) {
+    const { goalId, taskId } = await resolveGoalScheduleRelations(tx, userId, payload, resolve);
+    const startsAt = parseScheduleDate(payload, "start", "startsAt");
+    const endsAt = parseScheduleDate(payload, "end", "endsAt");
+    assertValidScheduleRange(startsAt, endsAt);
+    await tx.scheduleBlock.create({ data: { userId, goalId, taskId, title: String(payload.title ?? "新安排"), startsAt, endsAt, source: "agent" } });
+    if (taskId) await aggregateTaskStatus(tx, taskId);
+    return;
+  }
+  if (type === "update" && (isPersonalScheduleEntity(entity, payload) || isGoalScheduleEntity(entity, payload))) {
     const current = await tx.scheduleBlock.findFirst({ where: { id: entityId, userId, deletedAt: null } }); if (!current) throw new DomainError("SCHEDULE_NOT_FOUND", "待调整的日程不存在。", 404);
+    const currentKind = inferScheduleBlockKind(current);
+    if (isPersonalScheduleEntity(entity, payload) && currentKind !== "personal") {
+      throw new DomainError("INVALID_SCHEDULE_KIND", "该日程不是个人占位，请使用 schedule 类型调整。", 400);
+    }
+    if (isGoalScheduleEntity(entity, payload) && !isPersonalScheduleEntity(entity, payload) && currentKind === "personal") {
+      throw new DomainError("INVALID_SCHEDULE_KIND", "该日程是个人占位，请使用 personal_schedule 类型调整。", 400);
+    }
+    if (isPersonalScheduleEntity(entity, payload)) assertPersonalSchedulePayload(payload);
     const newStart = payload.start !== undefined || payload.startsAt !== undefined ? parseScheduleDate(payload, "start", "startsAt") : null;
     const newEnd = payload.end !== undefined || payload.endsAt !== undefined ? parseScheduleDate(payload, "end", "endsAt") : null;
+    if (newStart || newEnd) assertValidScheduleRange(newStart ?? current.startsAt, newEnd ?? current.endsAt);
     const moved = (newStart && newStart.getTime() !== current.startsAt.getTime()) || (newEnd && newEnd.getTime() !== current.endsAt.getTime());
     if (moved) {
       // 时间有变化：走统一改期路径，保留原块历史
@@ -239,7 +265,7 @@ async function applyOperation(tx: Prisma.TransactionClient, userId: string, oper
   if (type === "update" && entity.includes("goal")) { await tx.goal.updateMany({ where: { id: entityId, userId, archivedAt: null }, data: { ...(payload.title !== undefined && { title: String(payload.title) }), ...(payload.description !== undefined && { description: optionalString(payload.description) }), ...(payload.category !== undefined && { category: optionalString(payload.category) }), ...(payload.project !== undefined && { project: optionalString(payload.project) }), ...(payload.skill !== undefined && { skill: optionalString(payload.skill) }), ...(payload.targetDate !== undefined && { targetDate: optionalDate(payload.targetDate) }), ...(payload.status !== undefined && { status: String(payload.status).toUpperCase() as GoalStatus }), version: { increment: 1 } } }); return; }
   if (type === "update" && entity.includes("milestone")) { await tx.milestone.updateMany({ where: { id: entityId, goal: { userId } }, data: { ...(payload.title !== undefined && { title: String(payload.title) }), ...(payload.description !== undefined && { description: optionalString(payload.description) }), version: { increment: 1 } } }); return; }
   if (type === "update" && entity.includes("outcome")) { await tx.outcome.updateMany({ where: { id: entityId, goal: { userId } }, data: { ...(payload.description !== undefined && { description: String(payload.description) }), version: { increment: 1 } } }); return; }
-  if (type === "archive" && entity.includes("schedule")) {
+  if (type === "archive" && (isPersonalScheduleEntity(entity, payload) || isGoalScheduleEntity(entity, payload))) {
     const block = await tx.scheduleBlock.findFirst({ where: { id: entityId, userId, deletedAt: null }, select: { taskId: true } });
     await tx.scheduleBlock.updateMany({ where: { id: entityId, userId }, data: { status: ScheduleBlockStatus.CANCELLED, deletedAt: new Date(), version: { increment: 1 } } });
     if (block?.taskId) await aggregateTaskStatus(tx, block.taskId);
@@ -251,8 +277,58 @@ async function applyOperation(tx: Prisma.TransactionClient, userId: string, oper
 }
 
 async function assertGoal(tx: Prisma.TransactionClient, userId: string, goalId: string) { if (!goalId || !(await tx.goal.findFirst({ where: { id: goalId, userId, archivedAt: null }, select: { id: true } }))) throw new DomainError("INVALID_GOAL", "变更草案引用了不存在的目标。", 400); }
+
+/**
+ * 校验个人日程 payload 不得携带目标、任务、Routine 或重复规则。
+ * @param payload - 规范化后的操作 payload
+ */
+function assertPersonalSchedulePayload(payload: Record<string, unknown>) {
+  const forbidden = ["goalId", "taskId", "taskIds", "routineId", "goalRef", "taskRef", "routineRef", "recurrenceRule", "recurrence"];
+  for (const key of forbidden) {
+    if (payload[key] !== undefined && payload[key] !== null && payload[key] !== "") {
+      throw new DomainError("INVALID_PERSONAL_SCHEDULE", "个人日程不得关联目标、任务、Routine 或重复规则。", 400);
+    }
+  }
+}
+
+/**
+ * 解析目标日程必须关联的 goalId / taskId，并校验不得使用重复规则。
+ * @param tx - 事务客户端
+ * @param userId - 用户 ID
+ * @param payload - 操作 payload
+ * @param resolve - 引用 ID 解析函数
+ */
+async function resolveGoalScheduleRelations(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  payload: Record<string, unknown>,
+  resolve: (value: unknown) => string | undefined,
+) {
+  if (payload.recurrenceRule || payload.recurrence) {
+    throw new DomainError("INVALID_GOAL_SCHEDULE", "重复性安排应使用 routine 实体，而不是 schedule。", 400);
+  }
+  let goalId = resolve(payload.goalId ?? payload.goalRef);
+  const taskId = resolve(payload.taskId ?? payload.taskRef);
+  if (!goalId && taskId) {
+    const task = await tx.task.findFirst({ where: { id: taskId, goal: { userId }, archivedAt: null }, select: { goalId: true } });
+    if (!task) throw new DomainError("INVALID_TASK", "关联任务不存在。", 400);
+    goalId = task.goalId;
+  }
+  if (!goalId) throw new DomainError("INVALID_GOAL_SCHEDULE", "目标日程必须关联 goalId 或 taskId。", 400);
+  await assertGoal(tx, userId, goalId);
+  if (taskId) {
+    const task = await tx.task.findFirst({ where: { id: taskId, goalId, archivedAt: null }, select: { id: true } });
+    if (!task) throw new DomainError("INVALID_TASK", "关联任务不存在或不属于该目标。", 400);
+  }
+  return { goalId, taskId: taskId ?? null };
+}
+
 function optionalString(value: unknown) { return typeof value === "string" && value ? value : undefined; }
 function optionalNumber(value: unknown) { const number = Number(value); return Number.isFinite(number) ? number : undefined; }
 function optionalDate(value: unknown) { return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? new Date(value) : undefined; }
 function jsonValue(value: unknown): Prisma.InputJsonValue | undefined { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue; }
 function parseScheduleDate(payload: Record<string, unknown>, shortKey: string, isoKey: string) { const raw = payload[isoKey] ?? payload[shortKey]; if (typeof raw === "string" && raw.includes("T")) return new Date(raw); const date = String(payload.date ?? new Date().toISOString().slice(0, 10)); return new Date(`${date}T${String(raw ?? "10:00")}:00+08:00`); }
+function assertValidScheduleRange(startsAt: Date, endsAt: Date) {
+  if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) throw new DomainError("INVALID_SCHEDULE_TIME", "草案里的日程时间无法识别，请重新生成草案。", 400);
+  if (endsAt <= startsAt) throw new DomainError("INVALID_SCHEDULE_RANGE", "草案里的日程结束时间必须晚于开始时间。", 400);
+}

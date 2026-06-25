@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db";
 import { DomainError } from "@/server/api-response";
 import { ensureLocalUser } from "@/server/auth";
 import { createScheduleBlockSchema, executionFeedbackSchema, updateScheduleBlockSchema } from "@/server/validation";
+import { inferScheduleBlockKind } from "@/lib/schedule-block-kind";
 import { expandRoutineOccurrences } from "@/server/services/routines";
 
 const statusMap = { planned: ScheduleBlockStatus.PLANNED, in_progress: ScheduleBlockStatus.IN_PROGRESS, completed: ScheduleBlockStatus.COMPLETED, missed: ScheduleBlockStatus.MISSED, rescheduled: ScheduleBlockStatus.RESCHEDULED, cancelled: ScheduleBlockStatus.CANCELLED } as const;
@@ -384,9 +385,17 @@ type SerializedBlockSource = {
 function serializeBlock<T extends SerializedBlockSource>(block: T) {
   const linkedIds = block.linkedTasks?.map((link) => link.taskId) ?? [];
   const taskIds = linkedIds.length ? linkedIds : block.taskId ? [block.taskId] : [];
+  const blockKind = inferScheduleBlockKind({
+    goalId: "goalId" in block ? (block as { goalId?: string | null }).goalId : null,
+    taskId: block.taskId,
+    taskIds,
+    routineId: "routineId" in block ? (block as { routineId?: string | null }).routineId : null,
+    source: "source" in block ? (block as { source?: string | null }).source : null,
+  });
   return {
     ...block,
     taskIds,
+    blockKind,
     status: block.status.toLowerCase(),
     startsAt: block.startsAt.toISOString(),
     endsAt: block.endsAt.toISOString(),

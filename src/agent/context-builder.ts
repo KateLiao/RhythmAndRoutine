@@ -1,5 +1,6 @@
 import { AgentContext, Capability, ContextReference } from "./types";
 import { formatAgentTemporalAnchor } from "@/lib/timezone";
+import { inferScheduleIntentHint } from "./infer-capability";
 
 export type ContextDataSource = {
   getUser(userId: string): Promise<{ id: string; timezone: string; preferences: Record<string, unknown> }>;
@@ -114,6 +115,17 @@ export function buildAgentContextSummary(
   business: Record<string, unknown>,
   page?: AgentContext["page"],
   timezone = "Asia/Shanghai",
+  prompt?: string,
 ): string {
-  return `${formatAgentTemporalAnchor(new Date(), timezone)}\n${summarizeBusinessForPrompt(business, page)}`;
+  const view = (page?.path ?? "goals") as "today" | "goals" | "goal-detail" | "task-detail" | "routines" | "review" | "settings";
+  const scheduleHint = prompt ? inferScheduleIntentHint(prompt, view) : null;
+  const hintLine = scheduleHint === "personal"
+    ? "【日历意图提示】用户表述更像个人时间占位，优先使用 personal_schedule。"
+    : scheduleHint === "goal_task"
+      ? "【日历意图提示】用户表述更像目标/任务安排，优先使用 schedule 并关联 goalId 或 taskId。"
+      : scheduleHint === "routine"
+        ? "【日历意图提示】用户表述含重复语义，优先使用 routine 而非多个 schedule。"
+        : "";
+  const base = `${formatAgentTemporalAnchor(new Date(), timezone)}\n${summarizeBusinessForPrompt(business, page)}`;
+  return hintLine ? `${base}\n${hintLine}` : base;
 }

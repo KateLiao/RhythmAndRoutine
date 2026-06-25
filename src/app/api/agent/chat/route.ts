@@ -27,7 +27,7 @@ const requestSchema = z.object({
 
 type StreamPayload =
   | { type: "status"; phase: "context" | "thinking" | "tool" | "writing"; message: string }
-  | (RunEvent & { label?: string; summary?: string; detail?: ReturnType<typeof buildToolStepDetail> })
+  | (RunEvent & { label?: string; summary?: string; detail?: ReturnType<typeof buildToolStepDetail> | Extract<RunEvent, { type: "loop_step" }>["detail"] })
   | { type: "done"; text: string; provider: string; model: string; changeSet: (ChangeSetDraft & { id: string }) | null }
   | { type: "error"; message: string };
 

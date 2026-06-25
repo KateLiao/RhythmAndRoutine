@@ -11,7 +11,7 @@ export class PrismaRunStore implements AgentRunStore {
     return getDb().agentRun.create({
       data: {
         userId: input.userId, capability: input.capability, triggerSource: TriggerSource.USER,
-        modelProvider: input.provider, modelId: input.model, status: AgentRunStatus.RUNNING, startedAt: new Date(),
+        modelProvider: input.provider, modelId: input.model, status: AgentRunStatus.RUNNING, inputSummary: input.inputSummary?.slice(0, 2000), startedAt: new Date(),
         contextItems: { create: manifest.flatMap((item) => typeof item.entityId === "string" ? [{ entityType: String(item.entityType ?? "unknown"), entityId: item.entityId, version: typeof item.version === "number" ? item.version : undefined, reason: String(item.reason ?? "Agent 上下文") }] : []) },
       },
       select: { id: true },
@@ -21,6 +21,9 @@ export class PrismaRunStore implements AgentRunStore {
   async appendStep(runId: string, step: Parameters<AgentRunStore["appendStep"]>[1]) {
     await getDb().agentStep.create({ data: {
       agentRunId: runId, sequence: step.sequence, kind: step.kind,
+      loopIteration: step.loopIteration, goalStatus: step.goalStatus, nextAction: step.nextAction,
+      reason: step.reason?.slice(0, 2000), missingInformation: step.missingInformation ? json(step.missingInformation) : undefined,
+      toolAttemptCount: step.toolAttemptCount,
       inputSummary: summarize(step.input), outputSummary: summarize(step.output), durationMs: step.durationMs,
       inputTokens: step.inputTokens, outputTokens: step.outputTokens,
       toolCalls: step.toolCalls?.length ? { create: step.toolCalls.map((call, index) => ({
@@ -30,9 +33,15 @@ export class PrismaRunStore implements AgentRunStore {
     } });
   }
 
-  async markAwaitingConfirmation(runId: string) { await getDb().agentRun.update({ where: { id: runId }, data: { status: AgentRunStatus.AWAITING_CONFIRMATION } }); }
-  async complete(runId: string, finalText: string) { await getDb().agentRun.update({ where: { id: runId }, data: { status: AgentRunStatus.COMPLETED, finalSummary: finalText.slice(0, 2000), completedAt: new Date() } }); }
-  async fail(runId: string, code: string, message: string) { await getDb().agentRun.update({ where: { id: runId }, data: { status: AgentRunStatus.FAILED, errorCode: code, errorMessage: message.slice(0, 2000), completedAt: new Date() } }); }
+  async markAwaitingConfirmation(runId: string, _changeSetId: string, summary: string, retryCount: number) {
+    await getDb().agentRun.update({ where: { id: runId }, data: { status: AgentRunStatus.AWAITING_CONFIRMATION, exitReason: "awaiting_user_confirmation", goalStatus: "awaiting_confirmation", retryCount, finalSummary: summary.slice(0, 2000) } });
+  }
+  async complete(runId: string, finalText: string, exitReason: string, goalStatus: string, retryCount: number) {
+    await getDb().agentRun.update({ where: { id: runId }, data: { status: AgentRunStatus.COMPLETED, exitReason, goalStatus, retryCount, finalSummary: finalText.slice(0, 2000), completedAt: new Date() } });
+  }
+  async fail(runId: string, code: string, message: string, exitReason: string, retryCount: number) {
+    await getDb().agentRun.update({ where: { id: runId }, data: { status: AgentRunStatus.FAILED, exitReason, goalStatus: "blocked", retryCount, errorCode: code, errorMessage: message.slice(0, 2000), completedAt: new Date() } });
+  }
 
   /**
    * 取消一个 Run（RUNNING 或 AWAITING_CONFIRMATION 状态），同步取消关联的待审批 ChangeSet。
@@ -41,7 +50,7 @@ export class PrismaRunStore implements AgentRunStore {
    */
   async cancel(runId: string, reason?: string) {
     await getDb().$transaction(async (tx) => {
-      await tx.agentRun.update({ where: { id: runId }, data: { status: AgentRunStatus.CANCELLED, completedAt: new Date(), finalSummary: reason ?? "用户取消" } });
+      await tx.agentRun.update({ where: { id: runId }, data: { status: AgentRunStatus.CANCELLED, exitReason: "cancelled_by_user", goalStatus: "blocked", completedAt: new Date(), finalSummary: reason ?? "用户取消" } });
       await tx.changeSet.updateMany({ where: { agentRunId: runId, status: "AWAITING_CONFIRMATION" }, data: { status: "REJECTED", decidedAt: new Date(), decisionNote: reason ?? "Run 被取消" } });
     });
   }

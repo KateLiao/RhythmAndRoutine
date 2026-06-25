@@ -1,4 +1,5 @@
 import type { Goal, ScheduleItem } from "./demo-data";
+import { isPersonalScheduleEntity } from "./schedule-block-kind";
 
 const FIELD_LABELS: Record<string, string> = {
   title: "名称",
@@ -39,6 +40,8 @@ const FIELD_LABELS: Record<string, string> = {
   frequency: "频率",
   duration: "时长",
   changeReason: "调整原因",
+  blockKind: "日程类型",
+  scheduleKind: "日程类型",
 };
 
 const REF_KEY = /^(clientRef|tempId|milestoneRef|goalRef|taskRef|routineRef|parentTaskRef)$/i;
@@ -95,6 +98,10 @@ function humanizeRecurrenceRule(rule: string): string {
  */
 export function formatChangeOperationFieldValue(key: string, value: unknown, goals: Goal[], schedule: ScheduleItem[]): string {
   if (value === null || value === undefined || value === "") return "（空）";
+  if (key === "blockKind" || key === "scheduleKind") {
+    const labels: Record<string, string> = { personal: "个人日程", goal_task: "目标日程", routine_occurrence: "Routine 实例" };
+    return labels[String(value)] ?? String(value);
+  }
   if (key === "scheduleBlockId" || key === "scheduleId") {
     return schedule.find((entry) => entry.id === String(value))?.title ?? String(value);
   }
@@ -166,7 +173,13 @@ function collectReadablePayloadText(payload: Record<string, unknown>): string[] 
  * @param payload - 操作 payload
  */
 export function inferChangeOperationLabel(entity: string, payload: Record<string, unknown>): string {
-  if (payload.startsAt || payload.endsAt || payload.start || payload.end || payload.date || payload.time) return "日程";
+  if (isPersonalScheduleEntity(entity, payload)) return "个人日程";
+  if (payload.startsAt || payload.endsAt || payload.start || payload.end || payload.date || payload.time) {
+    if (!payload.goalId && !payload.taskId && !payload.routineId && !payload.goalRef && !payload.taskRef && !payload.routineRef && !payload.recurrenceRule) {
+      return "个人日程";
+    }
+    return "日程";
+  }
   if (payload.recurrenceRule || payload.recurrence || payload.minimumVersion) {
     if (!payload.completionCriteria && !payload.estimatedMinutes && !payload.intent) return "Routine";
   }
@@ -178,6 +191,7 @@ export function inferChangeOperationLabel(entity: string, payload: Record<string
   if (name.includes("milestone")) return "里程碑";
   if (name.includes("task")) return "任务";
   if (name.includes("routine")) return "Routine";
+  if (name === "personal_schedule") return "个人日程";
   if (name.includes("schedule")) return "日程";
   if (name.includes("goal")) return "目标";
   return "变更";
@@ -304,7 +318,9 @@ export function resolveChangeOperationTitle(
  * @param payload - 操作 payload
  */
 export function inferChangeOperationEntity(entity: string, payload: Record<string, unknown>): string {
+  if (isPersonalScheduleEntity(entity, payload)) return "personal_schedule";
   const label = inferChangeOperationLabel(entity, payload);
+  if (label === "个人日程") return "personal_schedule";
   if (label === "日程") return "schedule";
   if (label === "Routine") return "routine";
   if (label === "任务") return "task";
@@ -340,6 +356,40 @@ export function normalizeAgentChangePayload(entity: string, payload: Record<stri
 
   if (!normalized.description && typeof normalized.summary === "string" && normalized.summary.trim()) {
     normalized.description = normalized.summary.trim();
+  }
+
+  if (name.includes("schedule")) {
+    if (normalized.startsAt === undefined && normalized.startTime !== undefined) normalized.startsAt = normalized.startTime;
+    if (normalized.endsAt === undefined && normalized.endTime !== undefined) normalized.endsAt = normalized.endTime;
+    if (normalized.start === undefined && normalized.startTime !== undefined) normalized.start = normalized.startTime;
+    if (normalized.end === undefined && normalized.endTime !== undefined) normalized.end = normalized.endTime;
+    if (isPersonalScheduleEntity(name, normalized)) {
+      delete normalized.goalId;
+      delete normalized.taskId;
+      delete normalized.taskIds;
+      delete normalized.routineId;
+      delete normalized.goalRef;
+      delete normalized.taskRef;
+      delete normalized.routineRef;
+      delete normalized.recurrenceRule;
+      normalized.blockKind = "personal";
+    }
+  }
+
+  if (name.includes("personal_schedule")) {
+    if (normalized.startsAt === undefined && normalized.startTime !== undefined) normalized.startsAt = normalized.startTime;
+    if (normalized.endsAt === undefined && normalized.endTime !== undefined) normalized.endsAt = normalized.endTime;
+    if (normalized.start === undefined && normalized.startTime !== undefined) normalized.start = normalized.startTime;
+    if (normalized.end === undefined && normalized.endTime !== undefined) normalized.end = normalized.endTime;
+    delete normalized.goalId;
+    delete normalized.taskId;
+    delete normalized.taskIds;
+    delete normalized.routineId;
+    delete normalized.goalRef;
+    delete normalized.taskRef;
+    delete normalized.routineRef;
+    delete normalized.recurrenceRule;
+    normalized.blockKind = "personal";
   }
 
   if (name.includes("routine") && normalized.targetMinutes !== undefined && normalized.durationMinutes === undefined) {
@@ -411,7 +461,13 @@ export function enrichChangeOperation(operation: Record<string, unknown>, index 
       : `${label} ${index + 1}`;
   }
 
-  if (operation.type === "create") return { ...operation, entity, payload };
+  if (operation.type === "create") {
+    const enrichedPayload = entity.includes("personal_schedule") || payload.scheduleKind === "personal"
+      ? { ...payload, blockKind: "personal" }
+      : payload;
+    if (enrichedPayload.blockKind === "personal") delete enrichedPayload.scheduleKind;
+    return { ...operation, entity, payload: enrichedPayload };
+  }
   return { ...operation, entity, ...(operation.payload ? { payload } : {}), ...(operation.after ? { after: payload } : {}) };
 }
 
@@ -435,8 +491,13 @@ export function resolveChangeOperationFields(
   schedule: ScheduleItem[],
 ): Array<{ label: string; value: string }> {
   const payload = (operation.payload ?? operation.after ?? {}) as Record<string, unknown>;
-  const priority = ["title", "name", "description", "summary", "intent", "startsAt", "endsAt", "start", "end", "date", "time", "recurrenceRule", "minimumVersion", "estimatedMinutes", "targetDate", "dayOfWeek", "frequency", "activity", "type", "goalId", "taskId", "routineId", "status", "category", "position"];
-  const entries = Object.entries(payload).filter(([key, value]) => !REF_KEY.test(key) && value !== null && value !== undefined && value !== "");
+  const priority = ["title", "name", "description", "summary", "intent", "blockKind", "scheduleKind", "startsAt", "endsAt", "start", "end", "date", "time", "recurrenceRule", "minimumVersion", "estimatedMinutes", "targetDate", "dayOfWeek", "frequency", "activity", "type", "goalId", "taskId", "routineId", "status", "category", "position"];
+  const entries = Object.entries(payload).filter(([key, value]) => {
+    if (REF_KEY.test(key)) return false;
+    if (value === null || value === undefined || value === "") return false;
+    if (key === "scheduleKind" && payload.blockKind !== undefined && payload.blockKind !== null && payload.blockKind !== "") return false;
+    return true;
+  });
   entries.sort((a, b) => {
     const ai = priority.indexOf(a[0]);
     const bi = priority.indexOf(b[0]);

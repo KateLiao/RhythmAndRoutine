@@ -45,7 +45,7 @@ export async function loadWorkspace(timezone = "Asia/Shanghai"): Promise<{ goals
     return {
     id: block.id, title: block.title, goalId: block.goalId ?? "", taskId: taskIds[0] ?? block.taskId ?? undefined, taskIds: taskIds.length ? taskIds : undefined, routineId: block.routineId ?? undefined, start: time(block.startsAt, timezone), end: time(block.endsAt, timezone), version: block.version,
     date: dateKey(block.startsAt, timezone), occurrenceDate: block.occurrenceDate, source: block.source, displayMode: block.displayMode, changeReason: block.changeReason, rescheduledFromId: block.rescheduledFromId,
-    kind: block.routineId ? "routine" as const : "task" as const,
+    kind: block.routineId ? "routine" as const : (!block.goalId && !taskIds.length && !block.routineId) ? "personal" as const : "task" as const,
     status: block.status === "completed" ? "completed" as const : block.status === "missed" ? "missed" as const : block.status === "rescheduled" ? "rescheduled" as const : block.status === "cancelled" ? "cancelled" as const : "planned" as const,
     energy: "medium" as const, feedback: block.executionRecord?.rhythmFeedback?.tags?.[0], execution: block.executionRecord ? { result: block.executionRecord.result, actualMinutes: block.executionRecord.actualMinutes, actualStartedAt: block.executionRecord.actualStartedAt, actualEndedAt: block.executionRecord.actualEndedAt, quality: block.executionRecord.quality, obstacle: block.executionRecord.obstacle, deviationReason: block.executionRecord.deviationReason, nextAction: block.executionRecord.nextAction, tags: block.executionRecord.rhythmFeedback?.tags ?? [], note: block.executionRecord.rhythmFeedback?.note, comfortable: block.executionRecord.rhythmFeedback?.comfortable, timeFit: block.executionRecord.rhythmFeedback?.timeFit } : undefined,
   };
@@ -79,6 +79,26 @@ export const workspaceApi = {
 
 export type ModelProviderInfo = { id: string; label: string; model: string; baseUrl: string; enabled: boolean };
 export type AgentChangeSet = { id: string; title: string; reason: string; riskLevel: string; operations: Array<Record<string, unknown>> };
+export type AgentRunHistory = {
+  id: string;
+  status: string;
+  inputSummary?: string | null;
+  finalSummary?: string | null;
+  errorMessage?: string | null;
+  createdAt: string;
+  completedAt?: string | null;
+  steps: Array<{
+    id: string;
+    sequence: number;
+    kind: string;
+    goalStatus?: string | null;
+    nextAction?: string | null;
+    reason?: string | null;
+    missingInformation?: string[] | null;
+    outputSummary?: string | null;
+    toolCalls: Array<{ toolName: string; status: string; errorCode?: string | null }>;
+  }>;
+};
 export type ReviewRecord = { id: string; type: "daily" | "weekly"; status: string; periodStart: string; periodEnd: string; summary: string; metrics: Record<string, number>; findings: string[]; suggestions: string[]; confirmedAt?: string | null };
 
 export async function loadModelProviders() {
@@ -90,6 +110,7 @@ export async function loadModelProviders() {
 export type AgentStreamEvent =
   | { type: "status"; phase: "context" | "thinking" | "tool" | "writing"; message: string }
   | { type: "run_started"; runId: string }
+  | { type: "loop_step"; kind: "planning" | "verification" | "decision" | "final" | "recovery"; label: string; summary?: string; goalStatus?: string; nextAction?: string; detail?: { scope?: string; result?: string; judgment?: string; nextAction?: string; missingInformation?: string[] } }
   | { type: "text_delta"; text: string }
   | { type: "model_fallback"; from: string; to: string; reason: string }
   | { type: "tool_started"; tool: string; label?: string }
@@ -166,6 +187,9 @@ export const reviewApi = {
 export const changeSetApi = {
   list: () => request<AgentChangeSet[]>("/api/change-sets"),
   decide: (id: string, approved: boolean, selectedOperationIndexes?: number[]) => request<unknown>(`/api/change-sets/${id}/decision`, { method: "POST", body: JSON.stringify({ approved, selectedOperationIndexes }) }),
+};
+export const agentRunApi = {
+  list: (limit = 30) => request<AgentRunHistory[]>(`/api/agent/runs?limit=${limit}`),
 };
 export type UserSettings = { timezone: string; dailyReviewTime: string; weeklyReviewDay: number; weeklyReviewTime: string; defaultModel: string };
 export const settingsApi = {

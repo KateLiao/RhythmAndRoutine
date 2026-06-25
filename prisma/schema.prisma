@@ -255,8 +255,8 @@ model ScheduleBlock {
   taskId           String?
   routineId        String?
   title            String
-  startsAt         DateTime
-  endsAt           DateTime
+  startsAt         DateTime            @db.Timestamptz(3)
+  endsAt           DateTime            @db.Timestamptz(3)
   status           ScheduleBlockStatus @default(PLANNED)
   flexibility      String?
   source            String              @default("manual")
@@ -365,6 +365,9 @@ model AgentRun {
   maxTokens     Int?
   inputSummary  String?
   finalSummary  String?
+  exitReason    String?
+  goalStatus    String?
+  retryCount    Int            @default(0)
   errorCode     String?
   errorMessage  String?
   startedAt     DateTime?
@@ -383,7 +386,13 @@ model AgentStep {
   id             String   @id @default(cuid())
   agentRunId     String
   sequence       Int
+  loopIteration  Int?
   kind           String
+  goalStatus     String?
+  nextAction     String?
+  reason         String?
+  missingInformation Json?
+  toolAttemptCount Int?
   inputSummary   String?
   outputSummary  String?
   inputTokens    Int?
