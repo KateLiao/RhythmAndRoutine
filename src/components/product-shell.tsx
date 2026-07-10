@@ -13,7 +13,6 @@ import {
   Maximize2,
   Menu,
   Minimize2,
-  MoreHorizontal,
   Pencil,
   Plus,
   RefreshCcw,
@@ -25,7 +24,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { FormEvent, useEffect, useId, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
+import { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Goal, buildLocalTaskCompletionRecord, initialGoals, initialSchedule, resolveScheduleTaskIds, scheduleInvestedMinutes, scheduleLinksTask, taskInvestedMinutes, ScheduleItem } from "@/lib/demo-data";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
@@ -36,6 +35,14 @@ import { formatChangeOperationFieldValue, resolveChangeOperationFields, resolveC
 import { appendMessages, clearContext, getContextClearedAt, getContextMessages, loadMessages, serializeProcessSteps, syncContextScope } from "@/lib/conversation-store";
 import { inferCapability } from "@/agent/infer-capability";
 import { computeHomeInsights, isSignalPreferred, preferSignalForScheduling, type MomentAction } from "@/lib/home-insights";
+import { CalendarHeader } from "@/components/calendar/calendar-header";
+import { CalendarToolbar } from "@/components/calendar/calendar-toolbar";
+import { DayTimeline } from "@/components/calendar/day-timeline";
+import { WeekTimeline } from "@/components/calendar/week-timeline";
+import { MonthCalendarView } from "@/components/calendar/month-calendar-view";
+import { ScheduleDetailDrawer } from "@/components/calendar/schedule-detail-drawer";
+import type { CalendarMode } from "@/lib/calendar/navigation";
+import { formatToolbarTitle, shiftAnchorDate, weekDateKeys, weekStartFromDate } from "@/lib/calendar/navigation";
 
 type View = "today" | "goals" | "goal-detail" | "task-detail" | "routines" | "review" | "settings";
 type Modal = "goal" | "goal-detail" | "task-create" | "task-edit" | "routine" | "schedule-choice" | "schedule" | "personal-schedule" | "schedule-edit" | "feedback" | null;
@@ -130,7 +137,6 @@ export function ProductShell() {
   const selectedGoal = goals.find((goal) => goal.id === selectedGoalId);
   const selectedTask = selectedGoal?.tasks?.find((task) => task.id === selectedTaskId);
   const modalTask = selectedGoal?.tasks?.find((task) => task.id === (taskEditId ?? selectedTaskId));
-  const completed = schedule.filter((item) => (!item.date || item.date === currentDateKey()) && item.status === "completed").length;
 
   function openFeedback(id: string) {
     setSelectedBlock(id);
@@ -203,18 +209,19 @@ export function ProductShell() {
     setNotice("目标已保存，小律已准备好帮你澄清");
   }
 
-  async function updateScheduleTime(item: ScheduleItem, start: string, end: string) {
-    if (start === item.start && end === item.end) return;
-    setSchedule((items) => items.map((entry) => entry.id === item.id ? { ...entry, start, end, changeReason: "拖动调整时间" } : entry).sort((a, b) => a.start.localeCompare(b.start)));
+  async function updateScheduleTime(item: ScheduleItem, start: string, end: string, date?: string) {
+    const nextDate = date ?? item.date ?? currentDateKey();
+    if (start === item.start && end === item.end && nextDate === (item.date ?? currentDateKey())) return;
+    setSchedule((items) => items.map((entry) => entry.id === item.id ? { ...entry, start, end, date: nextDate, changeReason: "拖动调整时间" } : entry).sort((a, b) => a.start.localeCompare(b.start)));
     if (dataMode === "database" && item.source === "routine_occurrence" && item.routineId && item.occurrenceDate) {
-      await workspaceApi.recordRoutineExecution({ routineId: item.routineId, occurrenceDate: item.occurrenceDate, plannedStartAt: zonedDateTimeToIso(item.date ?? currentDateKey(), item.start, userSettings.timezone), plannedEndAt: zonedDateTimeToIso(item.date ?? currentDateKey(), item.end, userSettings.timezone), status: "rescheduled", rescheduledStartAt: zonedDateTimeToIso(item.date ?? currentDateKey(), start, userSettings.timezone), rescheduledEndAt: zonedDateTimeToIso(item.date ?? currentDateKey(), end, userSettings.timezone), feedbackTags: [] });
+      await workspaceApi.recordRoutineExecution({ routineId: item.routineId, occurrenceDate: item.occurrenceDate, plannedStartAt: zonedDateTimeToIso(item.date ?? currentDateKey(), item.start, userSettings.timezone), plannedEndAt: zonedDateTimeToIso(item.date ?? currentDateKey(), item.end, userSettings.timezone), status: "rescheduled", rescheduledStartAt: zonedDateTimeToIso(nextDate, start, userSettings.timezone), rescheduledEndAt: zonedDateTimeToIso(nextDate, end, userSettings.timezone), feedbackTags: [] });
       await refreshDatabase();
     } else if (dataMode === "database" && item.version) {
       await workspaceApi.updateSchedule(item.id, {
-        startsAt: zonedDateTimeToIso(item.date ?? currentDateKey(), start, userSettings.timezone),
-        endsAt: zonedDateTimeToIso(item.date ?? currentDateKey(), end, userSettings.timezone),
-        changeReason: "此刻建议调整",
-        moveInPlace: true,
+        startsAt: zonedDateTimeToIso(nextDate, start, userSettings.timezone),
+        endsAt: zonedDateTimeToIso(nextDate, end, userSettings.timezone),
+        changeReason: "拖动调整时间",
+        moveInPlace: false,
         expectedVersion: item.version,
       });
       await refreshDatabase();
@@ -278,18 +285,55 @@ export function ProductShell() {
   }
 
   /**
-   * 手动触发服务端洞察重生成。
+   * 手动触发服务端洞察重生成；成功更新快照，失败抛出错误供卡片展示。
    * @param target - moment 或 slow
+   * @param signal - 可选 AbortSignal，用于客户端超时取消
    */
-  async function regenerateInsightTarget(target: "moment" | "slow") {
+  async function regenerateInsightTarget(target: "moment" | "slow", signal?: AbortSignal) {
     if (dataMode !== "database") return;
+    const startedAt = Date.now();
     try {
-      const data = await homeInsightsApi.regenerate(target);
+      const data = await homeInsightsApi.regenerate(target, { signal });
+      console.info("[home-insights] client regenerate ok", {
+        target,
+        ms: Date.now() - startedAt,
+        regeneratedMoment: data.meta.regeneratedMoment,
+        regeneratedSlow: data.meta.regeneratedSlow,
+      });
       setServerInsights(data);
       setAlternateMomentIndex(0);
+      const wrote = target === "moment" ? data.meta.regeneratedMoment : data.meta.regeneratedSlow;
+      if (!wrote) {
+        console.warn("[home-insights] regenerate returned without new snapshot", {
+          target,
+          momentSource: data.moment.source,
+          rhythmSource: data.rhythm.source,
+        });
+        setNotice(target === "moment"
+          ? "此刻建议未写入新快照（可能 AI 失败后保留了旧版），请查看控制台日志"
+          : "节奏卡片未写入新快照（可能 AI 失败后保留了旧版），请查看控制台日志");
+        return;
+      }
       setNotice(target === "moment" ? "此刻建议已更新" : "节奏发现与本周轨道已更新");
-    } catch {
-      setNotice("洞察更新失败，请稍后再试");
+    } catch (caught) {
+      const aborted =
+        signal?.aborted
+        || (caught instanceof DOMException && caught.name === "AbortError")
+        || (caught instanceof Error && caught.name === "AbortError");
+      const message = aborted
+        ? "生成超时，请重试"
+        : caught instanceof Error && caught.message
+          ? caught.message
+          : "洞察更新失败，请稍后再试";
+      console.error("[home-insights] client regenerate failed", {
+        target,
+        ms: Date.now() - startedAt,
+        aborted,
+        message,
+        error: caught,
+      });
+      setNotice(message);
+      throw new Error(message);
     }
   }
 
@@ -597,7 +641,7 @@ export function ProductShell() {
           </div>
         </header>
 
-        {view === "today" && <TodayView goals={goals} schedule={schedule} completed={completed} rhythmSignals={rhythmSignals} timezone={userSettings.timezone} dataMode={dataMode} serverInsights={serverInsights} alternateMomentIndex={alternateMomentIndex} insightTick={insightTick} onFeedback={openFeedback} onComplete={completePersonalSchedule} onEdit={(id) => { const item = schedule.find((entry) => entry.id === id); setSelectedBlock(id); setModal(item?.source === "routine_occurrence" ? "feedback" : "schedule-edit"); }} onAdd={(seed) => openScheduleModal(seed, { promptType: true })} onUpdateTime={updateScheduleTime} onApplyMoment={applyMomentAction} onApplyServerMoment={applyServerMomentChange} onAlternateMoment={alternateServerMoment} onRegenerateMoment={() => regenerateInsightTarget("moment")} onRegenerateSlow={() => regenerateInsightTarget("slow")} onPreferSignal={(signalId) => { preferSignalForScheduling(signalId); setInsightTick((value) => value + 1); setNotice("已记录，后续排程会优先考虑此节奏发现"); }} />}
+        {view === "today" && <TodayView goals={goals} schedule={schedule} rhythmSignals={rhythmSignals} timezone={userSettings.timezone} dataMode={dataMode} serverInsights={serverInsights} alternateMomentIndex={alternateMomentIndex} insightTick={insightTick} onFeedback={openFeedback} onComplete={completePersonalSchedule} onEdit={(id) => { const item = schedule.find((entry) => entry.id === id); setSelectedBlock(id); setModal(item?.source === "routine_occurrence" ? "feedback" : "schedule-edit"); }} onAdd={(seed) => openScheduleModal(seed, { promptType: true })} onUpdateTime={updateScheduleTime} onApplyMoment={applyMomentAction} onApplyServerMoment={applyServerMomentChange} onAlternateMoment={alternateServerMoment} onRegenerateMoment={(signal) => regenerateInsightTarget("moment", signal)} onRegenerateSlow={(signal) => regenerateInsightTarget("slow", signal)} onPreferSignal={(signalId) => { preferSignalForScheduling(signalId); setInsightTick((value) => value + 1); setNotice("已记录，后续排程会优先考虑此节奏发现"); }} />}
         {view === "goals" && <GoalsView goals={goals} onAdd={() => setModal("goal")} onOpen={(id) => { setSelectedGoalId(id); setSelectedTaskId(null); setView("goal-detail"); }} />}
         {view === "goal-detail" && selectedGoal && <GoalDetailView goal={selectedGoal} schedule={schedule} reviews={reviews} rhythmSignals={rhythmSignals} onOpenTask={(taskId) => { setSelectedTaskId(taskId); setTaskDetailEditing(false); setView("task-detail"); }} onAddTask={openTaskCreateModal} onEditTask={openTaskEditModal} onDeleteTask={(taskId) => { const task = selectedGoal.tasks?.find((entry) => entry.id === taskId); if (task && window.confirm(`确定删除任务「${task.title}」？`)) void archiveTaskById(selectedGoal.id, taskId); }} onArrange={(seed) => openScheduleModal(seed)} onAskAgent={() => setAgentOpen(true)} />}
         {view === "task-detail" && selectedGoal && selectedTask && <TaskDetailView goal={selectedGoal} task={selectedTask} schedule={schedule} rhythmSignals={rhythmSignals} editing={taskDetailEditing} onEditingChange={setTaskDetailEditing} onSave={(patch) => saveTaskEdits(selectedGoal.id, selectedTask.id, patch, { keepModalOpen: true }).then(() => setTaskDetailEditing(false))} onComplete={() => completeTaskWithAi(selectedGoal.id, selectedTask.id)} onArrange={() => openScheduleModal({ goalId: selectedGoal.id, taskId: selectedTask.id })} onEditSchedule={(id) => { setSelectedBlock(id); setModal("schedule-edit"); }} onFeedback={openFeedback} onAskAgent={() => setAgentOpen(true)} />}
@@ -677,6 +721,17 @@ function formatInsightUpdatedAt(iso?: string) {
   return `${Math.max(1, Math.round(diffMs / 86_400_000))} 天前更新`;
 }
 
+const INSIGHT_REGEN_WAIT_MS = 8_000;
+/** 客户端等待上限：需大于服务端 AI 超时 + 规则降级与落库余量 */
+const INSIGHT_REGEN_TIMEOUT_MS = 75_000;
+
+type InsightRegenPhase = "idle" | "generating" | "waiting" | "error";
+
+type InsightRegenState = {
+  phase: InsightRegenPhase;
+  message: string | null;
+};
+
 /**
  * 洞察卡片标题行：来源标签、更新时间、手动刷新。
  * @param props - 标题与交互回调
@@ -718,10 +773,56 @@ function InsightCardHeading({
   );
 }
 
-function TodayView({ goals, schedule, completed, rhythmSignals, timezone, dataMode, serverInsights, alternateMomentIndex, insightTick, onFeedback, onComplete, onEdit, onAdd, onUpdateTime, onApplyMoment, onApplyServerMoment, onAlternateMoment, onRegenerateMoment, onRegenerateSlow, onPreferSignal }: {
+/**
+ * 洞察卡次要信息展开/收起开关；无折叠内容时不渲染。
+ * @param props.expanded - 当前是否展开
+ * @param props.hasContent - 是否存在可折叠内容
+ * @param props.onToggle - 切换展开状态
+ */
+function InsightExpandToggle({
+  expanded,
+  hasContent,
+  onToggle,
+}: {
+  expanded: boolean;
+  hasContent: boolean;
+  onToggle: () => void;
+}) {
+  if (!hasContent) return null;
+  return (
+    <button type="button" className="text-link insight-expand-toggle" onClick={onToggle}>
+      {expanded ? "收起" : "展开详情"}
+    </button>
+  );
+}
+
+/**
+ * 洞察卡生成态/错误态文案条；idle 时不渲染。
+ * @param props.state - 当前生成态
+ * @param props.onRetry - 失败时重试回调
+ */
+function InsightRegenStatusBar({
+  state,
+  onRetry,
+}: {
+  state: InsightRegenState;
+  onRetry?: () => void;
+}) {
+  if (state.phase === "idle" || !state.message) return null;
+  const isError = state.phase === "error";
+  return (
+    <div className={clsx("insight-regen-status", isError && "is-error", state.phase === "waiting" && "is-waiting")} role="status">
+      <span>{state.message}</span>
+      {isError && onRetry && (
+        <button type="button" className="text-link" onClick={onRetry}>重试</button>
+      )}
+    </div>
+  );
+}
+
+function TodayView({ goals, schedule, rhythmSignals, timezone, dataMode, serverInsights, alternateMomentIndex, insightTick, onFeedback, onComplete, onEdit, onAdd, onUpdateTime, onApplyMoment, onApplyServerMoment, onAlternateMoment, onRegenerateMoment, onRegenerateSlow, onPreferSignal }: {
   goals: Goal[];
   schedule: ScheduleItem[];
-  completed: number;
   rhythmSignals: RhythmSignalRecord[];
   timezone: string;
   dataMode: "checking" | "database" | "local";
@@ -732,24 +833,46 @@ function TodayView({ goals, schedule, completed, rhythmSignals, timezone, dataMo
   onComplete: (id: string) => void;
   onEdit: (id: string) => void;
   onAdd: (seed?: ScheduleTimeSeed) => void;
-  onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void>;
+  onUpdateTime: (item: ScheduleItem, start: string, end: string, date?: string) => Promise<void>;
   onApplyMoment: (action: MomentAction) => Promise<void>;
   onApplyServerMoment: (change: HomeInsightProposedChange) => Promise<void>;
   onAlternateMoment: () => void | Promise<void>;
-  onRegenerateMoment: () => void | Promise<void>;
-  onRegenerateSlow: () => void | Promise<void>;
+  onRegenerateMoment: (signal?: AbortSignal) => void | Promise<void>;
+  onRegenerateSlow: (signal?: AbortSignal) => void | Promise<void>;
   onPreferSignal: (signalId: string) => void;
 }) {
-  const [calendarMode, setCalendarMode] = useState<"today" | "week" | "month">("today");
-  const [selectedDate, setSelectedDate] = useState(currentDateKey());
+  const [calendarMode, setCalendarMode] = useState<CalendarMode>("today");
+  const [anchorDate, setAnchorDate] = useState(currentDateKey());
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [showRoutines, setShowRoutines] = useState(true);
   const [showCompleted, setShowCompleted] = useState(true);
   const [now, setNow] = useState(() => new Date());
-  const [momentBusy, setMomentBusy] = useState(false);
-  const [refreshingTarget, setRefreshingTarget] = useState<"moment" | "slow" | null>(null);
-  const visibleSchedule = schedule.filter((item) => (showRoutines || item.kind !== "routine") && (showCompleted || item.status !== "completed"));
-  const todaySchedule = visibleSchedule.filter((item) => isActiveCalendarBlock(item) && ((!item.date && selectedDate === currentDateKey()) || item.date === selectedDate)).sort((a, b) => a.start.localeCompare(b.start));
+  const [momentExpanded, setMomentExpanded] = useState(false);
+  const [rhythmExpanded, setRhythmExpanded] = useState(false);
+  const [weeklyExpanded, setWeeklyExpanded] = useState(false);
+  const [momentRegen, setMomentRegen] = useState<InsightRegenState>({ phase: "idle", message: null });
+  const [slowRegen, setSlowRegen] = useState<InsightRegenState>({ phase: "idle", message: null });
+  const regenTimersRef = useRef<{ wait?: number; timeout?: number; controller?: AbortController }>({});
+  const slowTimersRef = useRef<{ wait?: number; timeout?: number; controller?: AbortController }>({});
+  const todayKey = currentDateKey();
+  const visibleSchedule = schedule.filter((item) => (showRoutines || item.kind !== "routine") && (showCompleted || item.status !== "completed") && isActiveCalendarBlock(item));
+  const daySchedule = visibleSchedule.filter((item) => ((!item.date && anchorDate === todayKey) || item.date === anchorDate)).sort((a, b) => a.start.localeCompare(b.start));
+  const weekStart = weekStartFromDate(anchorDate);
+  const weekSchedule = visibleSchedule.filter((item) => weekDateKeys(weekStart).includes(item.date ?? todayKey));
+  const anchorMonth = new Date(`${anchorDate}T12:00:00`);
+  const monthSchedule = visibleSchedule.filter((item) => {
+    const key = item.date ?? todayKey;
+    const date = new Date(`${key}T12:00:00`);
+    return date.getFullYear() === anchorMonth.getFullYear() && date.getMonth() === anchorMonth.getMonth();
+  });
+  const progressSchedule = calendarMode === "today" ? daySchedule : calendarMode === "week" ? weekSchedule.filter((item) => item.date === anchorDate) : daySchedule;
+  const progressCompleted = progressSchedule.filter((item) => item.status === "completed").length;
+  const progressTotal = progressSchedule.length;
+  const selectedBlock = selectedBlockId ? schedule.find((entry) => entry.id === selectedBlockId) ?? null : null;
+  const toolbarTitle = formatToolbarTitle(anchorDate, calendarMode, todayKey, timezone);
   const useServerInsights = dataMode === "database" && serverInsights !== null;
+  const [momentBusy, setMomentBusy] = useState(false);
   const localInsights = useMemo(() => {
     void insightTick;
     return computeHomeInsights({
@@ -810,8 +933,109 @@ function TodayView({ goals, schedule, completed, rhythmSignals, timezone, dataMo
   const showMomentAlternate = useServerInsights
     ? momentCard.kind === "action" && !momentCard.exhausted && momentCard.alternateCount > 0
     : momentCard.kind === "action" && localInsights.moment.alternateCount > 1;
+  const momentHasDetail = Boolean(momentCard.reason);
+  const rhythmHasDetail = Boolean(rhythmCard.evidence || rhythmCard.impact);
+  const weeklyHasDetail = Boolean(weeklyCard.suggestion);
+  const momentRefreshing = momentRegen.phase === "generating" || momentRegen.phase === "waiting";
+  const slowRefreshing = slowRegen.phase === "generating" || slowRegen.phase === "waiting";
   useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 60_000); return () => window.clearInterval(timer); }, []);
-  function shiftDay(days: number) { const date = new Date(`${selectedDate}T12:00:00`); date.setDate(date.getDate() + days); setSelectedDate(localDateKey(date)); }
+  useEffect(() => () => {
+    // 仅清理定时器；不要 abort 进行中的 fetch。
+    // HMR / 重挂载 abort 会被误判为「生成超时」，而服务端其实还在跑。
+    window.clearTimeout(regenTimersRef.current.wait);
+    window.clearTimeout(regenTimersRef.current.timeout);
+    window.clearTimeout(slowTimersRef.current.wait);
+    window.clearTimeout(slowTimersRef.current.timeout);
+  }, []);
+
+  /**
+   * 打开日程详情侧滑面板并高亮对应块。
+   * @param id - 日程块 ID
+   */
+  function openScheduleDrawer(id: string) {
+    setSelectedBlockId(id);
+    setDrawerOpen(true);
+  }
+
+  /**
+   * 关闭详情侧滑面板并清除选中态。
+   */
+  function closeScheduleDrawer() {
+    setDrawerOpen(false);
+    setSelectedBlockId(null);
+  }
+
+  /**
+   * 清理指定目标的生成态定时器与 AbortController。
+   * @param target - moment 或 slow
+   */
+  function clearRegenTimers(target: "moment" | "slow") {
+    const bag = target === "moment" ? regenTimersRef : slowTimersRef;
+    window.clearTimeout(bag.current.wait);
+    window.clearTimeout(bag.current.timeout);
+    bag.current.wait = undefined;
+    bag.current.timeout = undefined;
+  }
+
+  /**
+   * 手动重生成洞察：先清空卡片正文，展示生成文案；超时按失败处理。
+   * @param target - moment 仅此刻建议；slow 同时影响节奏发现与本周轨道
+   */
+  async function handleRegenerate(target: "moment" | "slow") {
+    if (!useServerInsights) return;
+    if (target === "moment" && momentRefreshing) return;
+    if (target === "slow" && slowRefreshing) return;
+
+    const bag = target === "moment" ? regenTimersRef : slowTimersRef;
+    const setRegen = target === "moment" ? setMomentRegen : setSlowRegen;
+    clearRegenTimers(target);
+    bag.current.controller?.abort();
+    const controller = new AbortController();
+    bag.current.controller = controller;
+    const startedAt = Date.now();
+
+    setRegen({ phase: "generating", message: "正在重新生成…" });
+    bag.current.wait = window.setTimeout(() => {
+      console.warn("[home-insights] client still waiting", { target, ms: Date.now() - startedAt });
+      setRegen((prev) => (prev.phase === "generating" ? { phase: "waiting", message: "仍在生成，请稍候…" } : prev));
+    }, INSIGHT_REGEN_WAIT_MS);
+    bag.current.timeout = window.setTimeout(() => {
+      console.error("[home-insights] client abort timeout", {
+        target,
+        timeoutMs: INSIGHT_REGEN_TIMEOUT_MS,
+        ms: Date.now() - startedAt,
+      });
+      controller.abort();
+    }, INSIGHT_REGEN_TIMEOUT_MS);
+
+    try {
+      if (target === "moment") await onRegenerateMoment(controller.signal);
+      else await onRegenerateSlow(controller.signal);
+      clearRegenTimers(target);
+      setRegen({ phase: "idle", message: null });
+    } catch (caught) {
+      clearRegenTimers(target);
+      const aborted =
+        controller.signal.aborted
+        || (caught instanceof DOMException && caught.name === "AbortError")
+        || (caught instanceof Error && caught.name === "AbortError");
+      const message = aborted
+        ? "生成超时，请重试"
+        : caught instanceof Error && caught.message
+          ? caught.message
+          : "洞察更新失败，请稍后再试";
+      console.error("[home-insights] client card regen error", {
+        target,
+        ms: Date.now() - startedAt,
+        aborted,
+        message,
+      });
+      setRegen({ phase: "error", message });
+    } finally {
+      if (bag.current.controller === controller) bag.current.controller = undefined;
+    }
+  }
+
   async function handleApplyMoment() {
     if (momentBusy) return;
     if (useServerInsights) {
@@ -832,382 +1056,178 @@ function TodayView({ goals, schedule, completed, rhythmSignals, timezone, dataMo
       setMomentBusy(false);
     }
   }
-  async function handleRegenerate(target: "moment" | "slow") {
-    setRefreshingTarget(target);
-    try {
-      if (target === "moment") await onRegenerateMoment();
-      else await onRegenerateSlow();
-    } finally {
-      setRefreshingTarget(null);
-    }
-  }
   return (
     <div className="content-grid">
-      <section className="rhythm-card">
-        <div className="section-heading">
-          <div><span className="section-kicker">今日轨道</span><h2>一步一步，不需要追赶</h2></div>
-          <div className="completion-ring"><strong>{completed}</strong><span>/ {todaySchedule.length}</span></div>
+      <section className="rhythm-card calendar-shell">
+        <CalendarHeader completed={progressCompleted} total={progressTotal} />
+        <CalendarToolbar
+          title={toolbarTitle}
+          mode={calendarMode}
+          showRoutines={showRoutines}
+          showCompleted={showCompleted}
+          onToday={() => setAnchorDate(todayKey)}
+          onPrev={() => setAnchorDate((value) => shiftAnchorDate(value, calendarMode, -1))}
+          onNext={() => setAnchorDate((value) => shiftAnchorDate(value, calendarMode, 1))}
+          onModeChange={setCalendarMode}
+          onToggleRoutines={() => setShowRoutines((value) => !value)}
+          onToggleCompleted={() => setShowCompleted((value) => !value)}
+        />
+        <div className={clsx("calendar-body", drawerOpen && "drawer-open")}>
+          <div className="calendar-main">
+            {calendarMode === "today" && (
+              <DayTimeline
+                date={anchorDate}
+                todayKey={todayKey}
+                timezone={timezone}
+                now={now}
+                items={daySchedule}
+                goals={goals}
+                selectedBlockId={selectedBlockId}
+                onSelect={openScheduleDrawer}
+                onFeedback={onFeedback}
+                onComplete={onComplete}
+                onAdd={onAdd}
+                onUpdateTime={onUpdateTime}
+              />
+            )}
+            {calendarMode === "week" && (
+              <WeekTimeline
+                weekStart={weekStart}
+                anchorDate={anchorDate}
+                todayKey={todayKey}
+                timezone={timezone}
+                now={now}
+                schedule={weekSchedule}
+                goals={goals}
+                selectedBlockId={selectedBlockId}
+                onSelect={openScheduleDrawer}
+                onUpdateTime={onUpdateTime}
+              />
+            )}
+            {calendarMode === "month" && (
+              <MonthCalendarView
+                anchorDate={anchorDate}
+                todayKey={todayKey}
+                schedule={monthSchedule}
+                onSelectDate={(dateKey) => { setAnchorDate(dateKey); setCalendarMode("today"); }}
+                onSelectEvent={openScheduleDrawer}
+              />
+            )}
+          </div>
+          <ScheduleDetailDrawer
+            item={selectedBlock}
+            goals={goals}
+            open={drawerOpen}
+            onClose={closeScheduleDrawer}
+            onFeedback={(id) => { closeScheduleDrawer(); onFeedback(id); }}
+            onComplete={(id) => { closeScheduleDrawer(); void onComplete(id); }}
+            onEdit={(id) => { closeScheduleDrawer(); onEdit(id); }}
+            onDelete={(id) => { closeScheduleDrawer(); onEdit(id); }}
+          />
         </div>
-        <div className="calendar-toolbar"><div className="calendar-switch" aria-label="日历视图">{(["today", "week", "month"] as const).map((mode) => <button key={mode} className={calendarMode === mode ? "active" : ""} onClick={() => setCalendarMode(mode)}>{mode === "today" ? "日" : mode === "week" ? "周" : "月"}</button>)}</div><div className="calendar-filters"><button className={showRoutines ? "active" : ""} onClick={() => setShowRoutines((value) => !value)}>↻ Routine</button><button className={showCompleted ? "active" : ""} onClick={() => setShowCompleted((value) => !value)}>已完成</button></div>{calendarMode === "today" && <div className="date-nav"><button onClick={() => shiftDay(-1)} aria-label="前一天"><ChevronLeft size={15} /></button><button onClick={() => setSelectedDate(currentDateKey())}>{selectedDate === currentDateKey() ? "今天" : selectedDate}</button><button onClick={() => shiftDay(1)} aria-label="后一天"><ChevronRight size={15} /></button></div>}</div>
-        {calendarMode === "today" && <HourlyDayTimeline date={selectedDate} now={now} items={todaySchedule} goals={goals} onFeedback={onFeedback} onComplete={onComplete} onEdit={onEdit} onAdd={onAdd} onUpdateTime={onUpdateTime} />}
-        {calendarMode === "week" && <WeekCalendar schedule={visibleSchedule} goals={goals} onEdit={onEdit} />}
-        {calendarMode === "month" && <MonthCalendar schedule={visibleSchedule} onEdit={onEdit} />}
       </section>
 
       <aside className="insight-column">
         <section className="gentle-card greeting-card">
-          <div className="sun-shape"><span /></div>
+          <div className="sun-shape" aria-hidden="true"><span /></div>
           <InsightCardHeading
             kicker="此刻建议"
-            source={momentCard.source}
-            generatedAt={momentCard.generatedAt}
+            source={momentRefreshing ? undefined : momentCard.source}
+            generatedAt={momentRefreshing ? undefined : momentCard.generatedAt}
             showRefresh={useServerInsights}
-            refreshing={refreshingTarget === "moment"}
+            refreshing={momentRefreshing}
             onRefresh={() => void handleRegenerate("moment")}
           />
-          <h2>{momentCard.headline}</h2>
-          <p>{momentCard.judgment}</p>
-          {momentCard.reason && <p className="insight-reason">{momentCard.reason}</p>}
-          {momentCard.nextLabel && (
-            <p className="insight-next"><strong>推荐下一步：</strong>{momentCard.nextLabel}</p>
-          )}
-          {momentCard.kind === "exhausted" && (
-            <p className="insight-exhausted">本轮候选建议已全部浏览。完成一次执行或调整日程后，系统会生成新的建议。</p>
-          )}
-          {momentCard.kind === "action" && momentActionLabel && (
-            <div className="insight-actions">
-              <button type="button" className="primary-button compact" disabled={momentBusy} onClick={() => void handleApplyMoment()}>
-                {momentActionLabel}
-              </button>
-              {showMomentAlternate && (
-                <button type="button" className="text-link" onClick={() => void onAlternateMoment()}>换个建议</button>
+          <InsightRegenStatusBar state={momentRegen} onRetry={() => void handleRegenerate("moment")} />
+          {!momentRefreshing && (
+            <>
+              <h2>{momentCard.headline}</h2>
+              <p>{momentCard.judgment}</p>
+              {momentExpanded && momentCard.reason && <p className="insight-reason">{momentCard.reason}</p>}
+              {momentCard.nextLabel && (
+                <p className="insight-next"><strong>推荐下一步：</strong>{momentCard.nextLabel}</p>
               )}
-            </div>
+              {momentCard.kind === "exhausted" && (
+                <p className="insight-exhausted">本轮候选建议已全部浏览。完成一次执行或调整日程后，系统会生成新的建议。</p>
+              )}
+              {momentCard.kind === "action" && momentActionLabel && (
+                <div className="insight-actions">
+                  <button type="button" className="primary-button compact" disabled={momentBusy} onClick={() => void handleApplyMoment()}>
+                    {momentActionLabel}
+                  </button>
+                  {showMomentAlternate && (
+                    <button type="button" className="text-link" onClick={() => void onAlternateMoment()}>换个建议</button>
+                  )}
+                </div>
+              )}
+              <InsightExpandToggle
+                expanded={momentExpanded}
+                hasContent={momentHasDetail}
+                onToggle={() => setMomentExpanded((value) => !value)}
+              />
+            </>
           )}
         </section>
         <section className="gentle-card">
           <InsightCardHeading
             kicker="节奏发现"
-            source={rhythmCard.source}
-            generatedAt={rhythmCard.generatedAt}
+            source={slowRefreshing ? undefined : rhythmCard.source}
+            generatedAt={slowRefreshing ? undefined : rhythmCard.generatedAt}
             trailing={<Sparkles size={16} />}
             showRefresh={useServerInsights}
-            refreshing={refreshingTarget === "slow"}
+            refreshing={slowRefreshing}
             onRefresh={() => void handleRegenerate("slow")}
           />
-          <p className="quote">“{rhythmCard.statement}”</p>
-          {rhythmCard.evidence && <p className="insight-evidence"><strong>证据：</strong>{rhythmCard.evidence}</p>}
-          {rhythmCard.impact && <p className="insight-impact">{rhythmCard.impact}</p>}
-          {rhythmCard.kind === "insight" && rhythmCard.signalId && (
-            <div className="insight-actions">
-              <button type="button" className="text-link" disabled={rhythmCard.preferred} onClick={() => onPreferSignal(rhythmCard.signalId!)}>
-                {rhythmCard.preferred ? "已用于下次安排" : "用于下次安排"} <ArrowRight size={14} />
-              </button>
-            </div>
+          <InsightRegenStatusBar state={slowRegen} onRetry={() => void handleRegenerate("slow")} />
+          {!slowRefreshing && (
+            <>
+              <p className="quote">“{rhythmCard.statement}”</p>
+              {rhythmExpanded && rhythmCard.evidence && <p className="insight-evidence"><strong>证据：</strong>{rhythmCard.evidence}</p>}
+              {rhythmExpanded && rhythmCard.impact && <p className="insight-impact">{rhythmCard.impact}</p>}
+              {rhythmCard.kind === "insight" && rhythmCard.signalId && (
+                <div className="insight-actions">
+                  <button type="button" className="text-link" disabled={rhythmCard.preferred} onClick={() => onPreferSignal(rhythmCard.signalId!)}>
+                    {rhythmCard.preferred ? "已用于下次安排" : "用于下次安排"} <ArrowRight size={14} />
+                  </button>
+                </div>
+              )}
+              <InsightExpandToggle
+                expanded={rhythmExpanded}
+                hasContent={rhythmHasDetail}
+                onToggle={() => setRhythmExpanded((value) => !value)}
+              />
+            </>
           )}
         </section>
         <section className="gentle-card load-card">
           <InsightCardHeading
             kicker="本周轨道"
-            source={weeklyCard.source}
-            generatedAt={weeklyCard.generatedAt}
-            trailing={<span>{weeklyCard.statusLabel}</span>}
+            source={slowRefreshing ? undefined : weeklyCard.source}
+            generatedAt={slowRefreshing ? undefined : weeklyCard.generatedAt}
+            trailing={slowRefreshing ? undefined : <span>{weeklyCard.statusLabel}</span>}
             showRefresh={useServerInsights}
-            refreshing={refreshingTarget === "slow"}
+            refreshing={slowRefreshing}
             onRefresh={() => void handleRegenerate("slow")}
           />
-          <div className="load-bar"><i style={{ width: `${weeklyLoadPercent}%` }} /></div>
-          <p>{weeklyCard.summary}</p>
-          {weeklyCard.suggestion && <p className="insight-suggestion">{weeklyCard.suggestion}</p>}
+          <InsightRegenStatusBar state={slowRegen} onRetry={() => void handleRegenerate("slow")} />
+          {!slowRefreshing && (
+            <>
+              <div className="load-bar"><i style={{ width: `${weeklyLoadPercent}%` }} /></div>
+              <p>{weeklyCard.summary}</p>
+              {weeklyExpanded && weeklyCard.suggestion && <p className="insight-suggestion">{weeklyCard.suggestion}</p>}
+              <InsightExpandToggle
+                expanded={weeklyExpanded}
+                hasContent={weeklyHasDetail}
+                onToggle={() => setWeeklyExpanded((value) => !value)}
+              />
+            </>
+          )}
         </section>
       </aside>
     </div>
   );
 }
 
-function HourlyDayTimeline({ date, now, items, goals, onFeedback, onComplete, onEdit, onAdd, onUpdateTime }: { date: string; now: Date; items: ScheduleItem[]; goals: Goal[]; onFeedback: (id: string) => void; onComplete: (id: string) => void; onEdit: (id: string) => void; onAdd: (seed?: ScheduleTimeSeed) => void; onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void> }) {
-  const startHour = 7;
-  const endHour = 24;
-  const timelineEndMinutes = 24 * 60 + 30;
-  const hourHeight = timelineHourHeight();
-  const startMinutes = startHour * 60;
-  const timelineHeight = ((timelineEndMinutes - startMinutes) / 60) * hourHeight;
-  const labelMinutes = [...Array.from({ length: endHour - startHour + 1 }, (_, index) => startMinutes + index * 60), timelineEndMinutes];
-  const day = new Date(`${date}T12:00:00`);
-  const currentMinutes = timeMinutesInTimezone(now, currentTimezone());
-  const currentTop = ((currentMinutes - startMinutes) / 60) * hourHeight;
-  const showNow = date === currentDateKey() && currentTop >= 0 && currentTop <= timelineHeight;
-  const completedCount = items.filter((item) => item.status === "completed").length;
-  const waitingCount = items.filter((item) => item.status === "planned").length;
-  const earlierPending = useMemo(() => {
-    if (date !== currentDateKey()) return [];
-    return items
-      .filter((item) => isEarlierUnfinishedSchedule(item, currentMinutes))
-      .sort((a, b) => parseClock(a.start) - parseClock(b.start));
-  }, [date, items, currentMinutes]);
-  const shellRef = useRef<HTMLDivElement>(null);
-  const positionedDateRef = useRef<string | null>(null);
-  const [hiddenEarlierCount, setHiddenEarlierCount] = useState(0);
-  /** 客户端挂载后再渲染「现在」指示线，避免 SSR 与 hydration 时刻不一致 */
-  const [timelineMounted, setTimelineMounted] = useState(false);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setTimelineMounted(true), 0);
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  /**
-   * 进入日视图或切换日期时，将滚动位置定位到当前时间或首个日程附近。
-   */
-  useEffect(() => {
-    const shell = shellRef.current;
-    if (!shell || positionedDateRef.current === date) return;
-    const frame = window.requestAnimationFrame(() => {
-      positionedDateRef.current = date;
-      if (date === currentDateKey() && showNow) {
-        shell.scrollTop = Math.max(0, currentTop - shell.clientHeight * 0.5);
-        setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight));
-        return;
-      }
-      if (items.length) {
-        const firstMinutes = parseClock(items[0].start);
-        shell.scrollTop = Math.max(0, ((firstMinutes - startHour * 60) / 60) * hourHeight - 48);
-        setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight));
-        return;
-      }
-      shell.scrollTop = Math.max(0, ((10 - startHour) * hourHeight));
-      setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight));
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [date, showNow, currentTop, items, startHour, startMinutes, hourHeight, earlierPending]);
-
-  useEffect(() => {
-    const shell = shellRef.current;
-    if (!shell) return;
-    const frame = window.requestAnimationFrame(() => {
-      setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight));
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [earlierPending, startMinutes, hourHeight]);
-
-  /**
-   * 将时间轴滚动到视口上方最近的一条待执行日程（开始时间最晚、仍被遮挡的那条）。
-   */
-  function scrollToEarlierPending() {
-    const shell = shellRef.current;
-    if (!shell) return;
-    const hidden = listHiddenEarlierPending(earlierPending, shell.scrollTop, startMinutes, hourHeight);
-    const nearest = hidden[hidden.length - 1];
-    if (!nearest) return;
-    const itemTop = ((parseClock(nearest.start) - startMinutes) / 60) * hourHeight;
-    shell.scrollTo({ top: Math.max(0, itemTop - 20), behavior: "smooth" });
-  }
-
-  /**
-   * 在空白时间段上双击，按点击位置打开新建日程弹窗并预填时间。
-   * @param event - 时间轴 lane 上的鼠标事件
-   */
-  function handleLaneDoubleClick(event: MouseEvent<HTMLDivElement>) {
-    if ((event.target as HTMLElement).closest(".hour-block")) return;
-    const lane = event.currentTarget;
-    const rect = lane.getBoundingClientRect();
-    const y = event.clientY - rect.top;
-    const minutesFromDayStart = snapTimelineMinutes(Math.round((y / hourHeight) * 60));
-    const startMinutes = clampTimelineMinutes(startHour * 60 + minutesFromDayStart, startHour, endHour - 1);
-    const endMinutes = Math.min(endHour * 60, startMinutes + 60);
-    onAdd({ date, start: formatClock(startMinutes), end: formatClock(endMinutes) });
-  }
-
-  return <div className="day-timeline-module">
-    <div className="day-timeline-head"><div className="date-lockup"><strong>{day.getDate()}</strong><span><b>{new Intl.DateTimeFormat("zh-CN", { month: "short", weekday: "long" }).format(day)}</b><small>{completedCount ? `已经完成 ${completedCount} 项，按自己的节奏继续` : "给今天留出能够真正进入状态的空间"}</small></span></div><div className="rhythm-signature"><span>今日节奏</span><div>{[.45,.72,.9,.68,.52,.78,.38].map((height, index) => <i key={index} style={{ height: `${Math.round(height * 24)}px` }} />)}</div><small>专注 → 整理 → 身体</small></div></div>
-    {hiddenEarlierCount > 0 && <button type="button" className="earlier-pending-cue" onClick={scrollToEarlierPending}>↑ 上方还有 {hiddenEarlierCount} 个未完成日程</button>}
-    <div className="hourly-timeline-shell" ref={shellRef} onScroll={(event) => setHiddenEarlierCount(countHiddenEarlierPending(earlierPending, event.currentTarget.scrollTop, startMinutes, hourHeight))}>
-      <div className="hour-label-column" style={{ height: `${timelineHeight}px` }}>{labelMinutes.map((minute) => <span key={minute} style={{ top: `${((minute - startMinutes) / 60) * hourHeight}px` }}>{formatTimelineMinute(minute)}</span>)}</div>
-      <div className="hourly-lane hourly-lane-interactive" style={{ height: `${timelineHeight}px`, "--hour-height": `${hourHeight}px` } as React.CSSProperties} onDoubleClick={handleLaneDoubleClick}>
-        {labelMinutes.slice(0, -1).map((minute) => <div className="hour-gridline" key={minute} style={{ top: `${((minute - startMinutes) / 60) * hourHeight}px` }} />)}
-        <div className="hour-gridline timeline-end-line" style={{ top: `${timelineHeight}px` }} />
-        {timelineMounted && showNow && <div className="current-time-line" style={{ top: `${currentTop}px` }}><span>现在 {formatTimeInTimezone(now, currentTimezone())}</span><i /></div>}
-        {items.map((item) => <HourBlock key={item.id} item={item} goals={goals} startHour={startHour} endHour={endHour} hourHeight={hourHeight} onFeedback={onFeedback} onComplete={onComplete} onEdit={onEdit} onUpdateTime={onUpdateTime} />)}
-        {!items.length && <div className="hourly-empty"><Leaf size={18} /><strong>这一天还没有安排</strong><span>留白也可以，或放入一件真正想推进的事。</span><button onClick={() => onAdd({ date })}><Plus size={14} />安排一件事</button></div>}
-      </div>
-    </div>
-    <div className="day-timeline-summary"><span>{items.length} 个日程块</span><span>{completedCount} 个已完成</span><span>{waitingCount} 个待执行</span><button onClick={() => onAdd({ date })}><Plus size={14} />添加日程</button></div>
-  </div>;
-}
-
-type HourBlockDragKind = "move" | "resize-start" | "resize-end";
-
-/**
- * 日视图中的单个日程块，支持拖动整体移动与上下边缘调整时长。
- */
-function HourBlock({ item, goals, startHour, endHour, hourHeight, onFeedback, onComplete, onEdit, onUpdateTime }: {
-  item: ScheduleItem;
-  goals: Goal[];
-  startHour: number;
-  endHour: number;
-  hourHeight: number;
-  onFeedback: (id: string) => void;
-  onComplete: (id: string) => void;
-  onEdit: (id: string) => void;
-  onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void>;
-}) {
-  const goal = goals.find((entry) => entry.id === item.goalId);
-  const task = goal?.tasks?.find((entry) => entry.id === item.taskId);
-  const [preview, setPreview] = useState<{ start: string; end: string } | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const dragRef = useRef<{ kind: HourBlockDragKind; pointerId: number; startY: number; originStart: number; originEnd: number } | null>(null);
-  const movedRef = useRef(false);
-  const commitRef = useRef(false);
-
-  const displayStart = preview?.start ?? item.start;
-  const displayEnd = preview?.end ?? item.end;
-  const startMinutes = parseClock(displayStart);
-  const endMinutes = parseClock(displayEnd);
-  const durationMins = Math.max(TIMELINE_SNAP_MINUTES, endMinutes - startMinutes);
-  const top = Math.max(0, ((startMinutes - startHour * 60) / 60) * hourHeight);
-  const height = Math.max(HOUR_BLOCK_MIN_HEIGHT, (durationMins / 60) * hourHeight);
-  const rhythmTag = rhythmConditionLabels(task?.rhythmConditions)[0];
-  const typeLabel = item.kind === "routine" ? "ROUTINE" : item.kind === "review" ? "REVIEW" : item.kind === "personal" ? "个人" : "TASK";
-  const goalMeta = goal ? `${goal.title}${task?.milestoneId ? " · 里程碑" : ""}` : null;
-
-  /**
-   * 开始拖动日程块，记录指针与原始起止时间。
-   * @param kind - 拖动类型：整体移动或调整开始/结束
-   * @param event - 指针按下事件
-   */
-  function beginDrag(kind: HourBlockDragKind, event: PointerEvent) {
-    event.stopPropagation();
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = {
-      kind,
-      pointerId: event.pointerId,
-      startY: event.clientY,
-      originStart: parseClock(item.start),
-      originEnd: parseClock(item.end),
-    };
-    movedRef.current = false;
-    setDragging(true);
-  }
-
-  /**
-   * 根据指针位移更新预览中的起止时间。
-   * @param event - 指针移动事件
-   */
-  function handlePointerMove(event: PointerEvent<HTMLElement>) {
-    const drag = dragRef.current;
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    if (Math.abs(event.clientY - drag.startY) > 2) movedRef.current = true;
-    const deltaMinutes = snapTimelineMinutes(Math.round(((event.clientY - drag.startY) / hourHeight) * 60));
-    let nextStart = drag.originStart;
-    let nextEnd = drag.originEnd;
-    if (drag.kind === "move") {
-      nextStart = drag.originStart + deltaMinutes;
-      nextEnd = drag.originEnd + deltaMinutes;
-    } else if (drag.kind === "resize-start") {
-      nextStart = drag.originStart + deltaMinutes;
-    } else {
-      nextEnd = drag.originEnd + deltaMinutes;
-    }
-    const clamped = clampBlockTimes(nextStart, nextEnd, startHour, endHour);
-    setPreview({ start: formatClock(clamped.start), end: formatClock(clamped.end) });
-  }
-
-  /**
-   * 结束拖动并将时间变更提交到日程数据。
-   * @param event - 指针抬起事件
-   */
-  function handlePointerUp(event: PointerEvent<HTMLElement>) {
-    const drag = dragRef.current;
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    dragRef.current = null;
-    setDragging(false);
-    const nextPreview = preview;
-    setPreview(null);
-    if (nextPreview && (nextPreview.start !== item.start || nextPreview.end !== item.end) && !commitRef.current) {
-      commitRef.current = true;
-      void onUpdateTime(item, nextPreview.start, nextPreview.end).finally(() => { commitRef.current = false; });
-    }
-  }
-
-  return (
-    <article
-      className={clsx(
-        "hour-block",
-        item.kind,
-        item.status,
-        dragging && "is-dragging",
-        height < HOUR_BLOCK_MIN_HEIGHT + 28 && "is-compact",
-      )}
-      style={{ top: `${top}px`, height: `${height}px` }}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
-      onDoubleClick={() => onEdit(item.id)}
-    >
-      <span className="hour-block-accent" aria-hidden="true" />
-      <span className="hour-block-resize hour-block-resize-top" onPointerDown={(event) => beginDrag("resize-start", event)} aria-hidden="true" />
-      <span className="hour-block-resize hour-block-resize-bottom" onPointerDown={(event) => beginDrag("resize-end", event)} aria-hidden="true" />
-      <div className="hour-block-body">
-        <div
-          className="hour-block-info"
-          role="button"
-          tabIndex={0}
-          onPointerDown={(event) => beginDrag("move", event)}
-          onClick={() => { if (!movedRef.current) onEdit(item.id); }}
-          onKeyDown={(event) => { if (event.key === "Enter") onEdit(item.id); }}
-        >
-          <div className="hour-block-title-row">
-            <span className="hour-block-type">{typeLabel}</span>
-            <strong className="hour-block-title">{item.kind === "routine" ? `↻ ${item.title}` : item.title}</strong>
-          </div>
-          <div className="hour-block-meta-row">
-            <span className={clsx("hour-block-status", item.status)}>{scheduleStatusLabel(item.status)}</span>
-            {goalMeta && <span className="hour-block-goal"><span className={`goal-dot ${goal?.color ?? "violet"}`} />{goalMeta}</span>}
-            {rhythmTag && <span className="hour-block-chip">{rhythmTag}</span>}
-            {!goalMeta && !rhythmTag && <span className="hour-block-chip">{energyLabel(item.energy)}</span>}
-          </div>
-        </div>
-        <div className="hour-block-aside">
-          <span className="hour-block-duration">{minutesToCompact(durationMinutes(displayStart, displayEnd))}</span>
-          <div className="hour-block-aside-actions">
-            {item.status !== "completed" && item.kind === "personal" && (
-              <button type="button" className="hour-block-feedback-btn hour-block-complete-btn" onClick={(event) => { event.stopPropagation(); void onComplete(item.id); }}>完成</button>
-            )}
-            {item.status !== "completed" && item.kind !== "personal" && (
-              <button type="button" className="hour-block-feedback-btn" onClick={(event) => { event.stopPropagation(); onFeedback(item.id); }}>记录执行</button>
-            )}
-            <button type="button" className="hour-block-more-btn" aria-label={`编辑 ${item.title}`} onClick={(event) => { event.stopPropagation(); onEdit(item.id); }}><MoreHorizontal size={16} /></button>
-          </div>
-        </div>
-      </div>
-    </article>
-  );
-}
-
-function WeekCalendar({ schedule, goals, onEdit }: { schedule: ScheduleItem[]; goals: Goal[]; onEdit: (id: string) => void }) {
-  const start = startOfCurrentWeek();
-  const days = Array.from({ length: 7 }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return date; });
-  return <div className="week-calendar">
-    {days.map((date) => {
-      const key = localDateKey(date);
-      const items = schedule.filter((item) => isActiveCalendarBlock(item) && (item.date ?? currentDateKey()) === key).sort((a, b) => a.start.localeCompare(b.start));
-      return <section className={clsx("week-day", key === currentDateKey() && "is-today")} key={key}><header><span>{new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(date)}</span><strong>{date.getDate()}</strong></header><div>{items.map((item) => { const goal = goals.find((entry) => entry.id === item.goalId); return <button key={item.id} className={clsx("week-event", item.kind)} onClick={() => onEdit(item.id)}><small>{item.start}</small><b>{item.title}</b>{goal && <em>{goal.title}</em>}</button>; })}{!items.length && <span className="week-empty">留白</span>}</div></section>;
-    })}
-  </div>;
-}
-
-function MonthCalendar({ schedule, onEdit }: { schedule: ScheduleItem[]; onEdit: (id: string) => void }) {
-  const [cursor, setCursor] = useState(() => new Date()); const now = cursor;
-  const first = new Date(now.getFullYear(), now.getMonth(), 1);
-  const gridStart = new Date(first);
-  gridStart.setDate(first.getDate() - ((first.getDay() + 6) % 7));
-  const days = Array.from({ length: 42 }, (_, index) => { const date = new Date(gridStart); date.setDate(gridStart.getDate() + index); return date; });
-  return <div className="month-wrap"><div className="month-navigation"><button onClick={() => setCursor(new Date(now.getFullYear(), now.getMonth() - 1, 1))}><ChevronLeft size={15} />上月</button><strong>{now.getFullYear()} 年 {now.getMonth() + 1} 月</strong><div><button onClick={() => setCursor(new Date())}>今天</button><button onClick={() => setCursor(new Date(now.getFullYear(), now.getMonth() + 1, 1))}>下月<ChevronRight size={15} /></button></div></div><div className="month-weekdays">{["一", "二", "三", "四", "五", "六", "日"].map((day) => <span key={day}>周{day}</span>)}</div><div className="month-calendar">{days.map((date) => {
-    const key = localDateKey(date); const items = schedule.filter((item) => isActiveCalendarBlock(item) && (item.date ?? currentDateKey()) === key); const currentMonth = date.getMonth() === now.getMonth();
-    return <section className={clsx("month-day", !currentMonth && "outside", key === currentDateKey() && "is-today")} key={key}><strong>{date.getDate()}</strong><div>{items.slice(0, 3).map((item) => <button key={item.id} className={item.kind} onClick={() => onEdit(item.id)}>{item.title}</button>)}{items.length > 3 && <small>还有 {items.length - 3} 项</small>}</div></section>;
-  })}</div><div className="calendar-legend"><span><i className="task" />任务</span><span><i className="routine" />Routine</span><span><i className="personal" />个人</span><span><i className="rescheduled" />改期</span></div></div>;
-}
 
 function RoutinesView({ goals, schedule, selectedRoutineId, timezone, onSelect, onEdit, onQuickSave, onFeedback, onAskAgent }: { goals: Goal[]; schedule: ScheduleItem[]; selectedRoutineId: string | null; timezone: string; onSelect: (id: string) => void; onEdit: (id: string) => void; onQuickSave: (routine: NonNullable<Goal["routines"]>[number], patch: { startDate: string; endDate: string | null; status: "active" | "paused" }) => Promise<void>; onFeedback: (id: string) => void; onAskAgent: () => void }) {
   const routines = goals.flatMap((goal) => (goal.routines ?? []).map((routine) => ({ routine, goal })));
@@ -2758,7 +2778,6 @@ function FeedbackModal({ item, onClose, onSave }: { item: ScheduleItem; onClose:
   return <ModalShell title={item.execution ? "修正执行记录" : "这次做得怎么样？"} caption={`${item.start}–${item.end} · ${item.title}`} onClose={onClose}><div className="feedback-result"><button className={result === "completed" ? "active" : ""} onClick={() => setResult("completed")}>完成</button><button className={result === "not_completed" ? "active" : ""} onClick={() => { setResult("not_completed"); setTag("没开始"); }}>未完成</button><button className={result === "rescheduled" ? "active" : ""} onClick={() => setResult("rescheduled")}>改期</button></div><div className="feedback-grid">{tags.map((value) => <button className={tag === value ? "active" : ""} key={value} onClick={() => setTag(value)}>{value}</button>)}</div><div className="form-stack feedback-details"><div className="field-row"><label>实际开始<input type="datetime-local" value={actualStartedAt} onChange={(event) => setActualStartedAt(event.target.value)} /></label><label>实际结束<input type="datetime-local" value={actualEndedAt} onChange={(event) => setActualEndedAt(event.target.value)} /></label><label>实际耗时（分钟）<input type="number" min="0" max="1440" value={actualMinutes} onChange={(event) => setActualMinutes(Number(event.target.value))} /></label><label>完成质量<select value={quality} onChange={(event) => setQuality(event.target.value)}><option value="">未评价</option><option value="great">很好</option><option value="good">达到预期</option><option value="rough">比较粗糙</option></select></label><label>时间匹配<select value={timeFit} onChange={(event) => setTimeFit(event.target.value)}><option value="good">很合适</option><option value="neutral">一般</option><option value="poor">不合适</option></select></label></div><label>遇到的阻碍<textarea rows={2} value={obstacle} onChange={(event) => setObstacle(event.target.value)} placeholder="例如：任务入口不够清楚、被消息打断" /></label><label>下一步<textarea rows={2} value={nextAction} onChange={(event) => setNextAction(event.target.value)} placeholder="例如：先补一份接口清单，再继续实现" /></label><label className="boolean-choice"><input type="checkbox" checked={comfortable} onChange={(event) => setComfortable(event.target.checked)} />这个强度对我来说舒适</label><label>{result === "completed" ? "补充感受" : "偏差原因"}<textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder="可选，写下最有用的一点" /></label><div className="form-actions"><button className="soft-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="button" onClick={() => onSave({ tag, result, actualMinutes, actualStartedAt, actualEndedAt, quality: quality || undefined, obstacle: obstacle || undefined, nextAction: nextAction || undefined, note, comfortable, timeFit })}>{item.execution ? "保存修正" : "保存执行反馈"}</button></div></div></ModalShell>;
 }
 
-function energyLabel(energy: ScheduleItem["energy"]) { return energy === "high" ? "高专注" : energy === "medium" ? "中等精力" : "低阻力"; }
 function feedbackTag(tag: string) { return tag === "顺畅" ? "smooth" : tag === "有阻力" ? "resistant" : tag === "勉强完成" ? "barely_completed" : tag === "状态很好" ? "high_energy" : tag === "状态很差" ? "low_energy" : tag === "被打断" ? "interrupted" : "not_started"; }
 function feedbackLabel(tag?: string) { return tag === "smooth" ? "顺畅" : tag === "resistant" ? "有阻力" : tag === "barely_completed" ? "勉强完成" : tag === "high_energy" ? "状态很好" : tag === "low_energy" ? "状态很差" : tag === "interrupted" ? "被打断" : tag === "not_started" ? "没开始" : tag ?? ""; }
 function currentTimezone() { try { const stored = localStorage.getItem("rr.settings"); return stored ? (JSON.parse(stored) as UserSettings).timezone : "Asia/Shanghai"; } catch { return "Asia/Shanghai"; } }
@@ -2769,17 +2788,6 @@ function startOfCurrentWeek() { const date = new Date(); date.setHours(0, 0, 0, 
 function startOfDay(date: Date) { const next = new Date(date); next.setHours(0, 0, 0, 0); return next; }
 function durationMinutes(start: string, end: string) { const [sh, sm] = start.split(":").map(Number); const [eh, em] = end.split(":").map(Number); return Math.max(0, eh * 60 + em - sh * 60 - sm); }
 function minutesToCompact(minutes: number) { return minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60 ? `${minutes % 60}m` : ""}` : `${minutes}m`; }
-const TIMELINE_SNAP_MINUTES = 15;
-const TIMELINE_MIN_BLOCK_MINUTES = 15;
-/** 日程块最小可用高度（px），与时间轴刻度联动 */
-const HOUR_BLOCK_MIN_HEIGHT = 72;
-
-/**
- * 按最短日程时长计算每小时时间轴高度，使 15 分钟块恰好达到最小可用高度。
- */
-function timelineHourHeight() {
-  return HOUR_BLOCK_MIN_HEIGHT * (60 / TIMELINE_SNAP_MINUTES);
-}
 type ScheduleTimeSeed = { goalId?: string; taskId?: string; routineId?: string; date?: string; start?: string; end?: string };
 
 /**
@@ -2792,90 +2800,7 @@ function formatClock(totalMinutes: number) {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
-/** Format a timeline label, wrapping the next day's midnight while preserving the 00:30 endpoint. */
-function formatTimelineMinute(totalMinutes: number) {
-  const normalized = ((totalMinutes % 1440) + 1440) % 1440;
-  return formatClock(normalized);
-}
-
-/**
- * 判断日程块是否属于「未完成且已开始」——用于日视图顶部回看提示。
- * Routine 实例若超过计划结束时间且未记录执行，服务端会标为 `missed`，仍应计入。
- * @param item - 日程块
- * @param currentMinutes - 用户时区下的当前时刻（从 0:00 起算的分钟数）
- */
-function isEarlierUnfinishedSchedule(item: ScheduleItem, currentMinutes: number) {
-  if (parseClock(item.start) >= currentMinutes) return false;
-  return item.status === "planned" || item.status === "missed";
-}
-
-/**
- * 列出已滚出时间轴视口上方、且开始时间早于当前时刻的未完成日程。
- * @param items - 当日待执行且已开始的日程（按开始时间升序）
- * @param scrollTop - 时间轴滚动容器的 scrollTop
- * @param timelineStartMinutes - 日视图起始分钟（如 7:00 → 420）
- * @param hourHeight - 每小时对应的像素高度
- */
-function listHiddenEarlierPending(items: ScheduleItem[], scrollTop: number, timelineStartMinutes: number, hourHeight: number) {
-  const viewportTop = scrollTop + 16;
-  return items.filter((item) => ((parseClock(item.start) - timelineStartMinutes) / 60) * hourHeight < viewportTop);
-}
-
-/**
- * 统计视口上方被遮挡的待执行日程数量，用于顶部提示条文案。
- * @param items - 当日待执行且已开始的日程（按开始时间升序）
- * @param scrollTop - 时间轴滚动容器的 scrollTop
- * @param timelineStartMinutes - 日视图起始分钟
- * @param hourHeight - 每小时对应的像素高度
- */
-function countHiddenEarlierPending(items: ScheduleItem[], scrollTop: number, timelineStartMinutes: number, hourHeight: number) {
-  return listHiddenEarlierPending(items, scrollTop, timelineStartMinutes, hourHeight).length;
-}
-
-/**
- * 将分钟数吸附到时间轴网格（默认 15 分钟）。
- * @param minutes - 原始分钟偏移
- */
-function snapTimelineMinutes(minutes: number) {
-  return Math.round(minutes / TIMELINE_SNAP_MINUTES) * TIMELINE_SNAP_MINUTES;
-}
-
-/**
- * 将分钟值限制在日视图可见时间范围内。
- * @param minutes - 待限制的分钟值
- * @param startHour - 日视图起始小时
- * @param endHour - 日视图结束小时
- */
-function clampTimelineMinutes(minutes: number, startHour: number, endHour: number) {
-  const minBound = startHour * 60;
-  const maxBound = endHour * 60;
-  return Math.max(minBound, Math.min(minutes, maxBound - TIMELINE_MIN_BLOCK_MINUTES));
-}
-
-/**
- * 约束日程块起止时间，保证最短时长且不超出日视图边界。
- * @param start - 开始分钟数
- * @param end - 结束分钟数
- * @param startHour - 日视图起始小时
- * @param endHour - 日视图结束小时
- */
-function clampBlockTimes(start: number, end: number, startHour: number, endHour: number) {
-  const minBound = startHour * 60;
-  const maxBound = endHour * 60;
-  let nextStart = snapTimelineMinutes(start);
-  let nextEnd = snapTimelineMinutes(end);
-  if (nextEnd - nextStart < TIMELINE_MIN_BLOCK_MINUTES) {
-    if (end !== start) nextEnd = nextStart + TIMELINE_MIN_BLOCK_MINUTES;
-    else nextStart = nextEnd - TIMELINE_MIN_BLOCK_MINUTES;
-  }
-  nextStart = Math.max(minBound, Math.min(nextStart, maxBound - TIMELINE_MIN_BLOCK_MINUTES));
-  nextEnd = Math.max(nextStart + TIMELINE_MIN_BLOCK_MINUTES, Math.min(nextEnd, maxBound));
-  return { start: nextStart, end: nextEnd };
-}
-
 function parseClock(value: string) { const [hours, minutes] = value.split(":").map(Number); return hours * 60 + minutes; }
-function timeMinutesInTimezone(date: Date, timezone: string) { const parts = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone }).formatToParts(date); const values = Object.fromEntries(parts.map((part) => [part.type, part.value])); return Number(values.hour) * 60 + Number(values.minute); }
-function formatTimeInTimezone(date: Date, timezone: string) { return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone }).format(date); }
 function scheduleStatusLabel(status: ScheduleItem["status"]) { return status === "completed" ? "已完成" : status === "missed" ? "未完成" : status === "rescheduled" ? "已改期" : status === "cancelled" ? "已取消" : "待执行"; }
 
 /**

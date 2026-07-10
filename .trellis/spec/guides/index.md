@@ -23,6 +23,7 @@ These guides help you **ask the right questions before coding**.
 |-------|---------|-------------|
 | [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md) | Identify patterns and reduce duplication | When you notice repeated patterns |
 | [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md) | Think through data flow across layers | Features spanning multiple layers |
+| [LLM Structured Output](./llm-structured-output.md) | Non-streaming `generateObject` / JSON mode pitfalls (esp. Qwen thinking) | When Agent works but structured LLM calls hang or fail schema |
 
 ---
 
@@ -50,6 +51,14 @@ These guides help you **ask the right questions before coding**.
 - [ ] Multiple branches update the same derived state from `kind` / `action`
 
 → Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
+
+### When to Think About LLM Structured Output
+
+- [ ] Non-streaming `generateObject` / JSON mode against Qwen or other thinking models
+- [ ] Agent streaming works but structured calls hang, time out, or 400
+- [ ] Zod rejects nearly-correct model JSON (`null` optionals, missing `label`, field aliases)
+
+→ Read [LLM Structured Output](./llm-structured-output.md)
 
 ### When Verifying AI Cross-Review Results
 

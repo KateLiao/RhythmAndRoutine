@@ -182,20 +182,28 @@ function buildResponse(
 }
 
 /**
- * 生成并落库 moment 快照；AI 失败降级为 rules 时不覆盖已有 AI 快照。
+ * 生成并落库 moment 快照。
+ * 定时/冷启动：AI 失败降级为 rules 时不覆盖已有 AI 快照。
+ * 手动刷新：允许 rules 覆盖，避免用户点更新后长时间无变化。
  * @param userId - 用户 ID
  * @param trigger - 触发来源
  */
 export async function regenerateMomentInsight(userId: string, trigger: InsightGenerationTrigger) {
+  const startedAt = Date.now();
   const user = await getDb().user.findUnique({ where: { id: userId }, select: { timezone: true } });
   const timezone = user?.timezone ?? "Asia/Shanghai";
   const facts = await buildHomeInsightFacts(userId, timezone);
   const existing = await getLatestInsightSnapshot(userId, "moment");
   const result = await generateMomentInsight(facts);
   if (!result) {
+    console.warn("[home-insights] moment generate empty", { trigger, ms: Date.now() - startedAt });
     return { snapshot: existing, regenerated: false };
   }
-  if (result.source === "rules" && existing?.source === "ai") {
+  if (trigger !== "manual" && result.source === "rules" && existing?.source === "ai") {
+    console.warn("[home-insights] moment keep existing AI snapshot (rules fallback)", {
+      trigger,
+      ms: Date.now() - startedAt,
+    });
     return { snapshot: existing, regenerated: false };
   }
   const saved = await saveMomentGenerationSnapshot(
@@ -206,21 +214,33 @@ export async function regenerateMomentInsight(userId: string, trigger: InsightGe
     trigger,
   );
   await cleanupOldInsightSnapshots(userId);
+  console.info("[home-insights] moment snapshot saved", {
+    trigger,
+    source: result.source,
+    ms: Date.now() - startedAt,
+  });
   return { snapshot: saved, regenerated: true };
 }
 
 /**
- * 生成并落库 slow 快照；AI 失败降级为 rules 时不覆盖已有 AI 快照。
+ * 生成并落库 slow 快照。
+ * 定时/冷启动：AI 失败降级为 rules 时不覆盖已有 AI 快照。
+ * 手动刷新：允许 rules 覆盖。
  * @param userId - 用户 ID
  * @param trigger - 触发来源
  */
 export async function regenerateSlowInsight(userId: string, trigger: InsightGenerationTrigger) {
+  const startedAt = Date.now();
   const user = await getDb().user.findUnique({ where: { id: userId }, select: { timezone: true } });
   const timezone = user?.timezone ?? "Asia/Shanghai";
   const facts = await buildHomeInsightFacts(userId, timezone);
   const existing = await getLatestInsightSnapshot(userId, "slow");
   const result = await generateSlowInsight(facts);
-  if (result.source === "rules" && existing?.source === "ai") {
+  if (trigger !== "manual" && result.source === "rules" && existing?.source === "ai") {
+    console.warn("[home-insights] slow keep existing AI snapshot (rules fallback)", {
+      trigger,
+      ms: Date.now() - startedAt,
+    });
     return { snapshot: existing, regenerated: false };
   }
   const saved = await saveSlowGenerationSnapshot(
@@ -231,6 +251,11 @@ export async function regenerateSlowInsight(userId: string, trigger: InsightGene
     trigger,
   );
   await cleanupOldInsightSnapshots(userId);
+  console.info("[home-insights] slow snapshot saved", {
+    trigger,
+    source: result.source,
+    ms: Date.now() - startedAt,
+  });
   return { snapshot: saved, regenerated: true };
 }
 

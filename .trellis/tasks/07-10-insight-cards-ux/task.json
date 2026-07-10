@@ -1,7 +1,7 @@
 {
-  "id": "homepage-insight-cards",
-  "name": "homepage-insight-cards",
-  "title": "首页右侧建议卡片",
+  "id": "insight-cards-ux",
+  "name": "insight-cards-ux",
+  "title": "首页洞察卡片高度与生成态优化",
   "description": "",
   "status": "in_progress",
   "dev_type": null,
@@ -10,7 +10,7 @@
   "priority": "P2",
   "creator": "skyeLiao",
   "assignee": "skyeLiao",
-  "createdAt": "2026-07-09",
+  "createdAt": "2026-07-10",
   "completedAt": null,
   "branch": null,
   "base_branch": "main",
@@ -18,10 +18,8 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [
-    "07-10-insight-cards-ux"
-  ],
-  "parent": "07-09-v03-release",
+  "children": [],
+  "parent": "07-09-homepage-insight-cards",
   "relatedFiles": [],
   "notes": "",
   "meta": {}

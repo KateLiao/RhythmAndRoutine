@@ -135,6 +135,70 @@ const insightClockSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 const insightDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const insightActionLabelSchema = z.string().min(1).max(40);
 
+/**
+ * 为 proposedChange 补齐缺失的 label，并把 null 可选字段清成 undefined。
+ * @param change - 原始 proposedChange
+ * @param fallbackLabel - 回退文案（通常来自 nextLabel）
+ */
+function withActionLabel(change: Record<string, unknown>, fallbackLabel: string) {
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(change)) {
+    if (value === null) continue;
+    next[key] = value;
+  }
+  if (!next.scheduleId && typeof next.blockId === "string") next.scheduleId = next.blockId;
+  if (!next.scheduleId && typeof next.id === "string" && next.type === "open_execution_feedback") {
+    next.scheduleId = next.id;
+  }
+  if (typeof next.label === "string" && next.label.trim()) return next;
+  return { ...next, label: fallbackLabel.slice(0, 40) || "接受安排" };
+}
+
+/**
+ * 归一化单条此刻建议卡片字段，兼容模型常见别名与缺省。
+ * @param card - 原始卡片对象
+ */
+function normalizeMomentCard(card: unknown): unknown {
+  if (!card || typeof card !== "object") return card;
+  const raw = card as Record<string, unknown>;
+  const nextLabel = typeof raw.nextLabel === "string" && raw.nextLabel.trim()
+    ? raw.nextLabel
+    : typeof raw.actionLabel === "string" && raw.actionLabel.trim()
+      ? raw.actionLabel
+      : "接受安排";
+  const reason = typeof raw.reason === "string" && raw.reason.trim()
+    ? raw.reason
+    : typeof raw.reasoning === "string" ? raw.reasoning : undefined;
+  const judgment = typeof raw.judgment === "string" && raw.judgment.trim()
+    ? raw.judgment
+    : reason;
+  const proposedChange = raw.proposedChange && typeof raw.proposedChange === "object"
+    ? withActionLabel(raw.proposedChange as Record<string, unknown>, nextLabel)
+    : raw.proposedChange;
+  return {
+    ...raw,
+    judgment,
+    reason: reason ?? judgment,
+    nextLabel,
+    proposedChange,
+  };
+}
+
+/**
+ * 归一化此刻建议 LLM 输出（primarySuggestion 等别名 → primary）。
+ * @param value - 模型原始 JSON
+ */
+function normalizeMomentGeneration(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const raw = value as Record<string, unknown>;
+  const primary = raw.primary ?? raw.primarySuggestion ?? raw.suggestion ?? raw.main;
+  const alternates = raw.alternateCandidates ?? raw.alternates ?? raw.candidates ?? [];
+  return {
+    primary: normalizeMomentCard(primary),
+    alternateCandidates: Array.isArray(alternates) ? alternates.map(normalizeMomentCard) : [],
+  };
+}
+
 /** 首页此刻建议的可执行日程变更 */
 export const homeInsightProposedChangeSchema = z.discriminatedUnion("type", [
   z.object({
@@ -151,8 +215,8 @@ export const homeInsightProposedChangeSchema = z.discriminatedUnion("type", [
     start: insightClockSchema,
     end: insightClockSchema,
     date: insightDateSchema,
-    goalId: z.string().optional(),
-    taskId: z.string().optional(),
+    goalId: z.string().nullish().transform((value) => value ?? undefined),
+    taskId: z.string().nullish().transform((value) => value ?? undefined),
     label: insightActionLabelSchema,
   }),
   z.object({
@@ -160,8 +224,8 @@ export const homeInsightProposedChangeSchema = z.discriminatedUnion("type", [
     start: insightClockSchema,
     end: insightClockSchema,
     date: insightDateSchema,
-    goalId: z.string().optional(),
-    taskId: z.string().optional(),
+    goalId: z.string().nullish().transform((value) => value ?? undefined),
+    taskId: z.string().nullish().transform((value) => value ?? undefined),
     label: insightActionLabelSchema,
   }),
   z.object({
@@ -180,11 +244,19 @@ export const momentInsightCardSchema = z.object({
   proposedChange: homeInsightProposedChangeSchema,
 });
 
-/** LLM 生成的此刻建议包（主卡 + 候选） */
-export const momentInsightGenerationSchema = z.object({
-  primary: momentInsightCardSchema,
-  alternateCandidates: z.array(momentInsightCardSchema).max(4).default([]),
-});
+/** LLM 生成的此刻建议包（主卡 + 候选）；先归一化别名再校验；无效候选丢弃不拖垮主卡 */
+export const momentInsightGenerationSchema = z.preprocess(
+  normalizeMomentGeneration,
+  z.object({
+    primary: momentInsightCardSchema,
+    alternateCandidates: z.array(z.unknown()).max(4).default([]).transform((items) =>
+      items.flatMap((item) => {
+        const parsed = momentInsightCardSchema.safeParse(item);
+        return parsed.success ? [parsed.data] : [];
+      }),
+    ),
+  }),
+);
 
 /** LLM 生成的慢路径洞察（节奏发现 + 本周轨道） */
 export const slowInsightsGenerationSchema = z.object({

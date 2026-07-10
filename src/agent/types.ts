@@ -107,6 +107,10 @@ export type StructuredRequest<T> = {
   prompt: string;
   schema: z.ZodType<T>;
   maxOutputTokens?: number;
+  /** 可选取消信号；用于洞察等场景的单次 LLM 超时 */
+  signal?: AbortSignal;
+  /** schema 校验失败时的最大重试次数（默认 2，即最多 3 次请求） */
+  maxRetries?: number;
 };
 
 export type ToolResult = { ok: true; data: unknown } | { ok: false; code: string; message: string; retryable: boolean };

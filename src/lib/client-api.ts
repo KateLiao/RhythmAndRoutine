@@ -83,8 +83,17 @@ export type ApiHomeInsights = {
 
 export const homeInsightsApi = {
   get: () => request<ApiHomeInsights>("/api/home/insights"),
-  regenerate: (target: "moment" | "slow") =>
-    request<ApiHomeInsights>("/api/home/insights/regenerate", { method: "POST", body: JSON.stringify({ target }) }),
+  /**
+   * 手动触发服务端洞察重生成（同步请求）。
+   * @param target - moment 仅重算此刻建议；slow 重算节奏发现与本周轨道
+   * @param options.signal - 可选 AbortSignal，用于客户端超时取消
+   */
+  regenerate: (target: "moment" | "slow", options?: { signal?: AbortSignal }) =>
+    request<ApiHomeInsights>("/api/home/insights/regenerate", {
+      method: "POST",
+      body: JSON.stringify({ target }),
+      signal: options?.signal,
+    }),
   alternateMoment: () => request<ApiHomeInsights>("/api/home/insights/moment", { method: "PATCH", body: JSON.stringify({ action: "alternate" }) }),
   respondMoment: (response: "accepted" | "ignored", applied = false) =>
     request<ApiHomeInsights>("/api/home/insights/moment", { method: "PATCH", body: JSON.stringify({ action: "respond", response, applied }) }),
