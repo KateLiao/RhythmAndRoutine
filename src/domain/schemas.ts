@@ -130,3 +130,78 @@ export type TaskCompletionRecord = TaskCompletionSummary & {
   completedSessions: number;
   generatedAt: string;
 };
+
+const insightClockSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+const insightDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const insightActionLabelSchema = z.string().min(1).max(40);
+
+/** 首页此刻建议的可执行日程变更 */
+export const homeInsightProposedChangeSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("reschedule"),
+    scheduleId: z.string(),
+    start: insightClockSchema,
+    end: insightClockSchema,
+    date: insightDateSchema,
+    label: insightActionLabelSchema,
+  }),
+  z.object({
+    type: z.literal("create_schedule"),
+    title: z.string().max(120),
+    start: insightClockSchema,
+    end: insightClockSchema,
+    date: insightDateSchema,
+    goalId: z.string().optional(),
+    taskId: z.string().optional(),
+    label: insightActionLabelSchema,
+  }),
+  z.object({
+    type: z.literal("open_schedule_form"),
+    start: insightClockSchema,
+    end: insightClockSchema,
+    date: insightDateSchema,
+    goalId: z.string().optional(),
+    taskId: z.string().optional(),
+    label: insightActionLabelSchema,
+  }),
+  z.object({
+    type: z.literal("open_execution_feedback"),
+    scheduleId: z.string(),
+    label: insightActionLabelSchema,
+  }),
+]);
+
+/** 单条此刻建议卡片（主卡或候选） */
+export const momentInsightCardSchema = z.object({
+  headline: z.string().min(1).max(80),
+  judgment: z.string().min(1).max(320),
+  reason: z.string().min(1).max(320),
+  nextLabel: z.string().min(1).max(120),
+  proposedChange: homeInsightProposedChangeSchema,
+});
+
+/** LLM 生成的此刻建议包（主卡 + 候选） */
+export const momentInsightGenerationSchema = z.object({
+  primary: momentInsightCardSchema,
+  alternateCandidates: z.array(momentInsightCardSchema).max(4).default([]),
+});
+
+/** LLM 生成的慢路径洞察（节奏发现 + 本周轨道） */
+export const slowInsightsGenerationSchema = z.object({
+  rhythm: z.object({
+    statement: z.string().min(1).max(400),
+    evidence: z.string().min(1).max(400),
+    impact: z.string().min(1).max(300),
+    relatedSignalId: z.string().optional(),
+  }),
+  weekly: z.object({
+    statusLabel: z.string().min(1).max(20),
+    status: z.enum(["relaxed", "balanced", "full", "overload", "off_track"]),
+    summary: z.string().min(1).max(400),
+    suggestion: z.string().max(300).optional(),
+  }),
+});
+
+export type HomeInsightProposedChange = z.infer<typeof homeInsightProposedChangeSchema>;
+export type MomentInsightGeneration = z.infer<typeof momentInsightGenerationSchema>;
+export type SlowInsightsGeneration = z.infer<typeof slowInsightsGenerationSchema>;

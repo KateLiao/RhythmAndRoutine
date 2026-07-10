@@ -1,6 +1,6 @@
 # Rhythm & Routine
 
-AI Native 的个人目标推进系统（**v0.2.0**）。当前版本已经可以在没有数据库和 AI Key 的情况下运行，目标、Task、Routine、内部日程和执行反馈会保存在浏览器中；连接 PostgreSQL 后自动切换为数据库模式。
+AI Native 的个人目标推进系统（**v0.3.0**）。当前版本已经可以在没有数据库和 AI Key 的情况下运行，目标、Task、Routine、内部日程和执行反馈会保存在浏览器中；连接 PostgreSQL 后自动切换为数据库模式。
 
 ## 直接运行
 
@@ -41,6 +41,13 @@ Agent Harness 已包含 Runtime、Context Builder、Tool Registry、目标驱动
 
 复制 `.env.example` 为 `.env`，填写所需供应商的 API Key，并通过 `DEFAULT_MODEL_PROVIDER` 选择默认供应商。模型名称和接口地址都可独立覆盖；没有任何 AI Key 时，目标、任务、Routine、日历、反馈与 Review 等手动功能仍可使用。
 
+## v0.3.0 更新
+
+- **首页右侧洞察卡片（Action → Insight → Progress）**：三张卡片基于真实执行数据给出可操作建议——**此刻建议**（即时行动与轻量改期/新增）、**节奏发现**（近 7–14 天执行节奏洞察）、**本周轨道**（本周负荷与目标推进状态）；支持「接受安排」「换个建议」与手动刷新。
+- **Facts + LLM 生成与快照落库**：服务端聚合执行事实（Facts），由 LLM 生成洞察内容并写入 `HomeInsightSnapshot`；进入首页时读取各 kind 最新快照，无 AI Key 或数据库时回退到客户端规则计算。
+- **定时刷新策略**：此刻建议按用户时区每小时整点生成；节奏发现与本周轨道每周三 08:00、周日 20:00 生成；提供 Cron 入口与手动重新生成 API。
+- **首页日历布局优化**：日视图采用纵向滚动时间轴，日程块高度与真实时长对应；周/月视图信息密度提升，工具栏整合日/周/月切换、今天导航与 Routine/已完成筛选。
+
 ## v0.2.0 更新
 
 - **Routine 闭环优化**：Routine 作为独立一等实体维护重复规则与有效期；详情页支持快捷修改 `startDate` / `endDate` 与 `active` / `paused` 状态，日历按当前窗口动态展开发生实例，暂停或缩短有效期会清理未来未执行实例。
@@ -53,6 +60,7 @@ Agent Harness 已包含 Runtime、Context Builder、Tool Registry、目标驱动
 - Routine 有效期、暂停/恢复与日历动态实例
 - 个人日程与目标日程的类型区分与独立管理
 - 内部日历的日、周、月视图和 Routine 动态发生实例
+- 首页此刻建议、节奏发现、本周轨道洞察卡片与轻量日程调整
 - 执行结果、实际耗时、节奏反馈与偏差原因记录
 - 日/周 Review 的生成、确认、撤回与定时生成入口
 - Agent 对话、业务 Context、目标驱动 Tool Loop 和待确认 ChangeSet
@@ -68,4 +76,4 @@ npm run build
 npm audit --omit=dev
 ```
 
-产品与架构范围见 [`docs/development-spec.md`](docs/development-spec.md)。v0.2.0 需求说明见 [`docs/v0.2.0 版本需求/`](docs/v0.2.0%20版本需求/)。
+产品与架构范围见 [`docs/development-spec.md`](docs/development-spec.md)。v0.3.0 需求说明见 [`docs/v0.3.0 版本需求/`](docs/v0.3.0%20版本需求/)；v0.2.0 见 [`docs/v0.2.0 版本需求/`](docs/v0.2.0%20版本需求/)。

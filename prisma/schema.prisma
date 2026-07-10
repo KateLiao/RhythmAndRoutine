@@ -112,6 +112,7 @@ model User {
   rhythmSignals    RhythmSignal[]
   agentRuns        AgentRun[]
   changeSets       ChangeSet[]
+  homeInsightSnapshots HomeInsightSnapshot[]
 }
 
 model Goal {
@@ -454,4 +455,25 @@ model ChangeSet {
   agentRun       AgentRun?       @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
 
   @@index([userId, status])
+}
+
+model HomeInsightSnapshot {
+  id                  String    @id @default(cuid())
+  userId              String
+  kind                String
+  factsHash           String
+  payload             Json
+  proposedChange      Json?
+  alternateCandidates Json?
+  alternateIndex      Int       @default(0)
+  source              String
+  modelId             String?
+  userResponse        String?
+  appliedAt           DateTime?
+  validUntil          DateTime?
+  generatedAt         DateTime  @default(now())
+  trigger             String?
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, kind, generatedAt])
 }

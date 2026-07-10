@@ -27,7 +27,68 @@ type ServerBlock = {
 
 function goalColor(index: number): Goal["color"] { return (["violet", "sage", "coral"] as const)[index % 3]; }
 
-export type RhythmSignalRecord = { id: string; type: string; statement: string; confidence?: number | null };
+export type RhythmSignalRecord = { id: string; type: string; statement: string; confidence?: number | null; evidence?: unknown };
+
+export type HomeInsightProposedChange =
+  | { type: "reschedule"; scheduleId: string; start: string; end: string; date: string; label: string }
+  | { type: "create_schedule"; title: string; start: string; end: string; date: string; goalId?: string; taskId?: string; label: string }
+  | { type: "open_schedule_form"; start: string; end: string; date: string; goalId?: string; taskId?: string; label: string }
+  | { type: "open_execution_feedback"; scheduleId: string; label: string };
+
+export type ApiHomeInsights = {
+  moment: {
+    kind: "action" | "empty" | "exhausted";
+    headline: string;
+    judgment: string;
+    reason?: string;
+    nextLabel?: string;
+    proposedChange?: HomeInsightProposedChange;
+    actionLabel?: string;
+    alternateCount: number;
+    alternateIndex: number;
+    exhausted: boolean;
+    source?: "ai" | "rules";
+    generatedAt?: string;
+    trigger?: string | null;
+  };
+  rhythm: {
+    kind: "insight" | "empty";
+    statement: string;
+    evidence?: string;
+    impact?: string;
+    signalId?: string;
+    source?: "ai" | "rules";
+    generatedAt?: string;
+    trigger?: string | null;
+  };
+  weekly: {
+    kind: "track" | "empty";
+    statusLabel: string;
+    status: string;
+    summary: string;
+    suggestion?: string;
+    plannedMinutes?: number;
+    completedMinutes?: number;
+    source?: "ai" | "rules";
+    generatedAt?: string;
+    trigger?: string | null;
+  };
+  meta: {
+    regeneratedMoment: boolean;
+    regeneratedSlow: boolean;
+    momentGeneratedAt?: string;
+    slowGeneratedAt?: string;
+  };
+};
+
+export const homeInsightsApi = {
+  get: () => request<ApiHomeInsights>("/api/home/insights"),
+  regenerate: (target: "moment" | "slow") =>
+    request<ApiHomeInsights>("/api/home/insights/regenerate", { method: "POST", body: JSON.stringify({ target }) }),
+  alternateMoment: () => request<ApiHomeInsights>("/api/home/insights/moment", { method: "PATCH", body: JSON.stringify({ action: "alternate" }) }),
+  respondMoment: (response: "accepted" | "ignored", applied = false) =>
+    request<ApiHomeInsights>("/api/home/insights/moment", { method: "PATCH", body: JSON.stringify({ action: "respond", response, applied }) }),
+};
 export async function loadWorkspace(timezone = "Asia/Shanghai"): Promise<{ goals: Goal[]; schedule: ScheduleItem[]; rhythmSignals: RhythmSignalRecord[] }> {
   const today = new Date();
   const from = new Date(today.getFullYear(), today.getMonth(), 1);

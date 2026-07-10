@@ -29,12 +29,13 @@ import { FormEvent, useEffect, useId, useMemo, useRef, useState, type MouseEvent
 import clsx from "clsx";
 import { Goal, buildLocalTaskCompletionRecord, initialGoals, initialSchedule, resolveScheduleTaskIds, scheduleInvestedMinutes, scheduleLinksTask, taskInvestedMinutes, ScheduleItem } from "@/lib/demo-data";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
-import { agentRunApi, changeSetApi, loadModelProviders, loadWorkspace, reviewApi, settingsApi, streamChatWithAgent, workspaceApi, type AgentChangeSet, type AgentRunHistory, type AgentStreamEvent, type ModelProviderInfo, type ReviewRecord, type RhythmSignalRecord, type UserSettings } from "@/lib/client-api";
+import { agentRunApi, changeSetApi, homeInsightsApi, loadModelProviders, loadWorkspace, reviewApi, settingsApi, streamChatWithAgent, workspaceApi, type AgentChangeSet, type AgentRunHistory, type AgentStreamEvent, type ApiHomeInsights, type HomeInsightProposedChange, type ModelProviderInfo, type ReviewRecord, type RhythmSignalRecord, type UserSettings } from "@/lib/client-api";
 import { AgentMarkdown } from "@/components/agent-markdown";
 import { AgentProcessSteps, type AgentProcessStep } from "@/components/agent-process-steps";
 import { formatChangeOperationFieldValue, resolveChangeOperationFields, resolveChangeOperationLabel, resolveChangeOperationTitle } from "@/lib/change-operation-display";
 import { appendMessages, clearContext, getContextClearedAt, getContextMessages, loadMessages, serializeProcessSteps, syncContextScope } from "@/lib/conversation-store";
 import { inferCapability } from "@/agent/infer-capability";
+import { computeHomeInsights, isSignalPreferred, preferSignalForScheduling, type MomentAction } from "@/lib/home-insights";
 
 type View = "today" | "goals" | "goal-detail" | "task-detail" | "routines" | "review" | "settings";
 type Modal = "goal" | "goal-detail" | "task-create" | "task-edit" | "routine" | "schedule-choice" | "schedule" | "personal-schedule" | "schedule-edit" | "feedback" | null;
@@ -78,6 +79,9 @@ export function ProductShell() {
   const [agentOpen, setAgentOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [taskDetailEditing, setTaskDetailEditing] = useState(false);
+  const [alternateMomentIndex, setAlternateMomentIndex] = useState(0);
+  const [insightTick, setInsightTick] = useState(0);
+  const [serverInsights, setServerInsights] = useState<ApiHomeInsights | null>(null);
 
   useEffect(() => {
     const savedGoals = localStorage.getItem("rr.goals");
@@ -95,6 +99,7 @@ export function ProductShell() {
       setSchedule(workspace.schedule);
       setRhythmSignals(workspace.rhythmSignals);
       setDataMode("database");
+      void refreshHomeInsights();
     }).catch(() => setDataMode("local"));
     reviewApi.list().then(setReviews).catch(() => undefined);
     settingsApi.get().then(setUserSettings).catch(() => undefined);
@@ -132,11 +137,58 @@ export function ProductShell() {
     setModal("feedback");
   }
 
+  /**
+   * 将个人日程轻量标记为已完成，不打开完整反馈弹窗。
+   * @param id - 日程块 ID
+   */
+  async function completePersonalSchedule(id: string) {
+    const item = schedule.find((entry) => entry.id === id);
+    if (!item || item.kind !== "personal" || item.status === "completed") return;
+    const actualMinutes = durationMinutes(item.start, item.end);
+    if (dataMode === "database") {
+      await workspaceApi.recordExecution(item.id, { result: "completed", tags: ["smooth"], actualMinutes });
+      await refreshDatabase();
+    } else {
+      setSchedule((items) => items.map((entry) => entry.id === id ? { ...entry, status: "completed" } : entry));
+    }
+    setNotice(`「${item.title}」已标记完成`);
+  }
+
   async function refreshDatabase() {
     const workspace = await loadWorkspace(userSettings.timezone);
     setGoals(workspace.goals);
     setSchedule(workspace.schedule);
     setRhythmSignals(workspace.rhythmSignals);
+    await refreshHomeInsights();
+  }
+
+  /**
+   * 从服务端读取落库的首页洞察快照（仅数据库模式）。
+   */
+  async function refreshHomeInsights() {
+    try {
+      const data = await homeInsightsApi.get();
+      setServerInsights(data);
+    } catch {
+      setServerInsights(null);
+    }
+  }
+
+  /**
+   * 将 API proposedChange 转为客户端可执行的 MomentAction。
+   * @param change - 服务端结构化日程变更
+   */
+  function proposedChangeToAction(change: HomeInsightProposedChange): MomentAction {
+    if (change.type === "reschedule") {
+      return { type: "reschedule", scheduleId: change.scheduleId, start: change.start, end: change.end, date: change.date, label: change.label };
+    }
+    if (change.type === "create_schedule") {
+      return { type: "create_schedule", title: change.title, start: change.start, end: change.end, date: change.date, goalId: change.goalId, taskId: change.taskId, label: change.label };
+    }
+    if (change.type === "open_execution_feedback") {
+      return { type: "open_execution_feedback", scheduleId: change.scheduleId, label: change.label };
+    }
+    return { type: "open_schedule_form", goalId: change.goalId, taskId: change.taskId, date: change.date, start: change.start, end: change.end, label: change.label };
   }
 
   async function saveGoal(goal: Goal) {
@@ -161,11 +213,103 @@ export function ProductShell() {
       await workspaceApi.updateSchedule(item.id, {
         startsAt: zonedDateTimeToIso(item.date ?? currentDateKey(), start, userSettings.timezone),
         endsAt: zonedDateTimeToIso(item.date ?? currentDateKey(), end, userSettings.timezone),
-        changeReason: "拖动调整时间",
+        changeReason: "此刻建议调整",
         moveInPlace: true,
         expectedVersion: item.version,
       });
       await refreshDatabase();
+    }
+  }
+
+  /**
+   * 执行「此刻建议」的轻量日程调整（改期或新增）。
+   * @param action - 规则引擎或 API 输出的可执行动作
+   */
+  async function applyMomentAction(action: MomentAction) {
+    if (action.type === "reschedule") {
+      const item = schedule.find((entry) => entry.id === action.scheduleId);
+      if (!item) return;
+      await updateScheduleTime(item, action.start, action.end);
+      setNotice(`已将「${item.title}」调整到 ${action.start}–${action.end}`);
+      setAlternateMomentIndex(0);
+      if (dataMode === "database") await homeInsightsApi.respondMoment("accepted", true).then(setServerInsights).catch(() => undefined);
+      return;
+    }
+    if (action.type === "create_schedule") {
+      const taskIds = action.taskId ? [action.taskId] : undefined;
+      const draft: ScheduleItem = {
+        id: crypto.randomUUID(),
+        title: action.title,
+        goalId: action.goalId ?? "",
+        taskId: action.taskId,
+        taskIds,
+        start: action.start,
+        end: action.end,
+        date: action.date,
+        kind: action.goalId ? "task" : "personal",
+        status: "planned",
+        energy: "medium",
+      };
+      await saveSchedule(draft);
+      setNotice(`已添加「${action.title}」`);
+      setAlternateMomentIndex(0);
+      if (dataMode === "database") await homeInsightsApi.respondMoment("accepted", true).then(setServerInsights).catch(() => undefined);
+      return;
+    }
+    if (action.type === "open_execution_feedback") {
+      const item = schedule.find((entry) => entry.id === action.scheduleId);
+      if (!item) return;
+      openFeedback(action.scheduleId);
+      setNotice(item ? `打开「${item.title}」的执行记录` : "打开执行记录");
+      setAlternateMomentIndex(0);
+      if (dataMode === "database") await homeInsightsApi.respondMoment("accepted", false).then(setServerInsights).catch(() => undefined);
+      return;
+    }
+    openScheduleModal({ goalId: action.goalId, taskId: action.taskId, date: action.date, start: action.start, end: action.end });
+  }
+
+  /**
+   * 应用服务端返回的 proposedChange 并刷新洞察快照。
+   * @param change - API 结构化变更
+   */
+  async function applyServerMomentChange(change: HomeInsightProposedChange) {
+    await applyMomentAction(proposedChangeToAction(change));
+    if (dataMode === "database") await refreshHomeInsights();
+  }
+
+  /**
+   * 手动触发服务端洞察重生成。
+   * @param target - moment 或 slow
+   */
+  async function regenerateInsightTarget(target: "moment" | "slow") {
+    if (dataMode !== "database") return;
+    try {
+      const data = await homeInsightsApi.regenerate(target);
+      setServerInsights(data);
+      setAlternateMomentIndex(0);
+      setNotice(target === "moment" ? "此刻建议已更新" : "节奏发现与本周轨道已更新");
+    } catch {
+      setNotice("洞察更新失败，请稍后再试");
+    }
+  }
+
+  /**
+   * 轮换服务端此刻建议候选并更新快照。
+   */
+  async function alternateServerMoment() {
+    if (dataMode !== "database") {
+      setAlternateMomentIndex((value) => value + 1);
+      return;
+    }
+    try {
+      const data = await homeInsightsApi.alternateMoment();
+      setServerInsights(data);
+      if (data.moment.exhausted) {
+        setNotice("本轮建议已全部浏览");
+      }
+    } catch {
+      setAlternateMomentIndex((value) => value + 1);
+      setNotice("暂时无法切换建议，请稍后再试");
     }
   }
 
@@ -453,7 +597,7 @@ export function ProductShell() {
           </div>
         </header>
 
-        {view === "today" && <TodayView goals={goals} schedule={schedule} completed={completed} rhythmSignals={rhythmSignals} onFeedback={openFeedback} onEdit={(id) => { const item = schedule.find((entry) => entry.id === id); setSelectedBlock(id); setModal(item?.source === "routine_occurrence" ? "feedback" : "schedule-edit"); }} onAdd={(seed) => openScheduleModal(seed, { promptType: true })} onUpdateTime={updateScheduleTime} />}
+        {view === "today" && <TodayView goals={goals} schedule={schedule} completed={completed} rhythmSignals={rhythmSignals} timezone={userSettings.timezone} dataMode={dataMode} serverInsights={serverInsights} alternateMomentIndex={alternateMomentIndex} insightTick={insightTick} onFeedback={openFeedback} onComplete={completePersonalSchedule} onEdit={(id) => { const item = schedule.find((entry) => entry.id === id); setSelectedBlock(id); setModal(item?.source === "routine_occurrence" ? "feedback" : "schedule-edit"); }} onAdd={(seed) => openScheduleModal(seed, { promptType: true })} onUpdateTime={updateScheduleTime} onApplyMoment={applyMomentAction} onApplyServerMoment={applyServerMomentChange} onAlternateMoment={alternateServerMoment} onRegenerateMoment={() => regenerateInsightTarget("moment")} onRegenerateSlow={() => regenerateInsightTarget("slow")} onPreferSignal={(signalId) => { preferSignalForScheduling(signalId); setInsightTick((value) => value + 1); setNotice("已记录，后续排程会优先考虑此节奏发现"); }} />}
         {view === "goals" && <GoalsView goals={goals} onAdd={() => setModal("goal")} onOpen={(id) => { setSelectedGoalId(id); setSelectedTaskId(null); setView("goal-detail"); }} />}
         {view === "goal-detail" && selectedGoal && <GoalDetailView goal={selectedGoal} schedule={schedule} reviews={reviews} rhythmSignals={rhythmSignals} onOpenTask={(taskId) => { setSelectedTaskId(taskId); setTaskDetailEditing(false); setView("task-detail"); }} onAddTask={openTaskCreateModal} onEditTask={openTaskEditModal} onDeleteTask={(taskId) => { const task = selectedGoal.tasks?.find((entry) => entry.id === taskId); if (task && window.confirm(`确定删除任务「${task.title}」？`)) void archiveTaskById(selectedGoal.id, taskId); }} onArrange={(seed) => openScheduleModal(seed)} onAskAgent={() => setAgentOpen(true)} />}
         {view === "task-detail" && selectedGoal && selectedTask && <TaskDetailView goal={selectedGoal} task={selectedTask} schedule={schedule} rhythmSignals={rhythmSignals} editing={taskDetailEditing} onEditingChange={setTaskDetailEditing} onSave={(patch) => saveTaskEdits(selectedGoal.id, selectedTask.id, patch, { keepModalOpen: true }).then(() => setTaskDetailEditing(false))} onComplete={() => completeTaskWithAi(selectedGoal.id, selectedTask.id)} onArrange={() => openScheduleModal({ goalId: selectedGoal.id, taskId: selectedTask.id })} onEditSchedule={(id) => { setSelectedBlock(id); setModal("schedule-edit"); }} onFeedback={openFeedback} onAskAgent={() => setAgentOpen(true)} />}
@@ -511,16 +655,192 @@ function NavButton({ active, icon, label, hint, onClick }: { active: boolean; ic
   return <button className={clsx("nav-button", active && "active")} onClick={onClick}>{icon}<span>{label}</span>{hint && <em>{hint}</em>}</button>;
 }
 
-function TodayView({ goals, schedule, completed, rhythmSignals, onFeedback, onEdit, onAdd, onUpdateTime }: { goals: Goal[]; schedule: ScheduleItem[]; completed: number; rhythmSignals: RhythmSignalRecord[]; onFeedback: (id: string) => void; onEdit: (id: string) => void; onAdd: (seed?: ScheduleTimeSeed) => void; onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void> }) {
+/**
+ * 展示洞察卡片内容来源（小律生成 / 规则建议）。
+ * @param source - API 返回的 ai 或 rules
+ */
+function InsightSourceBadge({ source }: { source?: "ai" | "rules" }) {
+  if (!source) return null;
+  return <span className={clsx("insight-source-badge", source)}>{source === "ai" ? "小律生成" : "规则建议"}</span>;
+}
+
+/**
+ * 将快照生成时间格式化为相对时间文案。
+ * @param iso - ISO 时间字符串
+ */
+function formatInsightUpdatedAt(iso?: string) {
+  if (!iso) return null;
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (diffMs < 60_000) return "刚刚更新";
+  if (diffMs < 3_600_000) return `${Math.max(1, Math.round(diffMs / 60_000))} 分钟前更新`;
+  if (diffMs < 86_400_000) return `${Math.max(1, Math.round(diffMs / 3_600_000))} 小时前更新`;
+  return `${Math.max(1, Math.round(diffMs / 86_400_000))} 天前更新`;
+}
+
+/**
+ * 洞察卡片标题行：来源标签、更新时间、手动刷新。
+ * @param props - 标题与交互回调
+ */
+function InsightCardHeading({
+  kicker,
+  source,
+  generatedAt,
+  trailing,
+  showRefresh,
+  refreshing,
+  onRefresh,
+}: {
+  kicker: string;
+  source?: "ai" | "rules";
+  generatedAt?: string;
+  trailing?: React.ReactNode;
+  showRefresh: boolean;
+  refreshing: boolean;
+  onRefresh?: () => void;
+}) {
+  const updatedLabel = formatInsightUpdatedAt(generatedAt);
+  return (
+    <div className="insight-card-heading">
+      <div className="insight-card-heading-main">
+        <span className="section-kicker">{kicker}</span>
+        <InsightSourceBadge source={source} />
+        {updatedLabel && <span className="insight-updated-at">{updatedLabel}</span>}
+      </div>
+      <div className="insight-card-heading-actions">
+        {trailing}
+        {showRefresh && onRefresh && (
+          <button type="button" className="insight-refresh-button" disabled={refreshing} onClick={onRefresh} aria-label={`更新${kicker}`}>
+            <RefreshCcw size={14} className={refreshing ? "spinning" : undefined} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TodayView({ goals, schedule, completed, rhythmSignals, timezone, dataMode, serverInsights, alternateMomentIndex, insightTick, onFeedback, onComplete, onEdit, onAdd, onUpdateTime, onApplyMoment, onApplyServerMoment, onAlternateMoment, onRegenerateMoment, onRegenerateSlow, onPreferSignal }: {
+  goals: Goal[];
+  schedule: ScheduleItem[];
+  completed: number;
+  rhythmSignals: RhythmSignalRecord[];
+  timezone: string;
+  dataMode: "checking" | "database" | "local";
+  serverInsights: ApiHomeInsights | null;
+  alternateMomentIndex: number;
+  insightTick: number;
+  onFeedback: (id: string) => void;
+  onComplete: (id: string) => void;
+  onEdit: (id: string) => void;
+  onAdd: (seed?: ScheduleTimeSeed) => void;
+  onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void>;
+  onApplyMoment: (action: MomentAction) => Promise<void>;
+  onApplyServerMoment: (change: HomeInsightProposedChange) => Promise<void>;
+  onAlternateMoment: () => void | Promise<void>;
+  onRegenerateMoment: () => void | Promise<void>;
+  onRegenerateSlow: () => void | Promise<void>;
+  onPreferSignal: (signalId: string) => void;
+}) {
   const [calendarMode, setCalendarMode] = useState<"today" | "week" | "month">("today");
   const [selectedDate, setSelectedDate] = useState(currentDateKey());
   const [showRoutines, setShowRoutines] = useState(true);
   const [showCompleted, setShowCompleted] = useState(true);
   const [now, setNow] = useState(() => new Date());
+  const [momentBusy, setMomentBusy] = useState(false);
+  const [refreshingTarget, setRefreshingTarget] = useState<"moment" | "slow" | null>(null);
   const visibleSchedule = schedule.filter((item) => (showRoutines || item.kind !== "routine") && (showCompleted || item.status !== "completed"));
   const todaySchedule = visibleSchedule.filter((item) => isActiveCalendarBlock(item) && ((!item.date && selectedDate === currentDateKey()) || item.date === selectedDate)).sort((a, b) => a.start.localeCompare(b.start));
+  const useServerInsights = dataMode === "database" && serverInsights !== null;
+  const localInsights = useMemo(() => {
+    void insightTick;
+    return computeHomeInsights({
+      now,
+      timezone,
+      goals,
+      schedule,
+      rhythmSignals,
+      alternateMomentIndex,
+    });
+  }, [now, timezone, goals, schedule, rhythmSignals, alternateMomentIndex, insightTick]);
+  const momentCard = useServerInsights && serverInsights
+    ? serverInsights.moment
+    : {
+        kind: localInsights.moment.kind,
+        headline: localInsights.moment.headline,
+        judgment: localInsights.moment.judgment,
+        reason: localInsights.moment.reason,
+        nextLabel: localInsights.moment.nextLabel,
+        proposedChange: undefined,
+        actionLabel: localInsights.moment.action?.label,
+        alternateCount: localInsights.moment.alternateCount,
+        alternateIndex: alternateMomentIndex,
+        exhausted: false,
+        source: "rules" as const,
+      };
+  const rhythmCard = useServerInsights && serverInsights
+    ? {
+        kind: serverInsights.rhythm.kind,
+        statement: serverInsights.rhythm.statement,
+        evidence: serverInsights.rhythm.evidence,
+        impact: serverInsights.rhythm.impact,
+        signalId: serverInsights.rhythm.signalId,
+        preferred: serverInsights.rhythm.signalId ? isSignalPreferred(serverInsights.rhythm.signalId) : false,
+        source: serverInsights.rhythm.source,
+        generatedAt: serverInsights.rhythm.generatedAt,
+      }
+    : { ...localInsights.rhythm, source: "rules" as const };
+  const weeklyCard = useServerInsights && serverInsights
+    ? {
+        kind: serverInsights.weekly.kind,
+        statusLabel: serverInsights.weekly.statusLabel,
+        status: serverInsights.weekly.status,
+        summary: serverInsights.weekly.summary,
+        suggestion: serverInsights.weekly.suggestion,
+        plannedMinutes: serverInsights.weekly.plannedMinutes ?? 0,
+        completedMinutes: serverInsights.weekly.completedMinutes ?? 0,
+        source: serverInsights.weekly.source,
+        generatedAt: serverInsights.weekly.generatedAt,
+      }
+    : { ...localInsights.weekly, source: "rules" as const };
+  const weeklyLoadPercent = weeklyCard.plannedMinutes > 0
+    ? Math.min(100, Math.round((weeklyCard.completedMinutes / weeklyCard.plannedMinutes) * 100))
+    : 0;
+  const momentActionLabel = useServerInsights
+    ? momentCard.proposedChange?.label ?? momentCard.actionLabel
+    : localInsights.moment.action?.label;
+  const showMomentAlternate = useServerInsights
+    ? momentCard.kind === "action" && !momentCard.exhausted && momentCard.alternateCount > 0
+    : momentCard.kind === "action" && localInsights.moment.alternateCount > 1;
   useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 60_000); return () => window.clearInterval(timer); }, []);
   function shiftDay(days: number) { const date = new Date(`${selectedDate}T12:00:00`); date.setDate(date.getDate() + days); setSelectedDate(localDateKey(date)); }
+  async function handleApplyMoment() {
+    if (momentBusy) return;
+    if (useServerInsights) {
+      if (!momentCard.proposedChange) return;
+      setMomentBusy(true);
+      try {
+        await onApplyServerMoment(momentCard.proposedChange);
+      } finally {
+        setMomentBusy(false);
+      }
+      return;
+    }
+    if (!localInsights.moment.action) return;
+    setMomentBusy(true);
+    try {
+      await onApplyMoment(localInsights.moment.action);
+    } finally {
+      setMomentBusy(false);
+    }
+  }
+  async function handleRegenerate(target: "moment" | "slow") {
+    setRefreshingTarget(target);
+    try {
+      if (target === "moment") await onRegenerateMoment();
+      else await onRegenerateSlow();
+    } finally {
+      setRefreshingTarget(null);
+    }
+  }
   return (
     <div className="content-grid">
       <section className="rhythm-card">
@@ -529,7 +849,7 @@ function TodayView({ goals, schedule, completed, rhythmSignals, onFeedback, onEd
           <div className="completion-ring"><strong>{completed}</strong><span>/ {todaySchedule.length}</span></div>
         </div>
         <div className="calendar-toolbar"><div className="calendar-switch" aria-label="日历视图">{(["today", "week", "month"] as const).map((mode) => <button key={mode} className={calendarMode === mode ? "active" : ""} onClick={() => setCalendarMode(mode)}>{mode === "today" ? "日" : mode === "week" ? "周" : "月"}</button>)}</div><div className="calendar-filters"><button className={showRoutines ? "active" : ""} onClick={() => setShowRoutines((value) => !value)}>↻ Routine</button><button className={showCompleted ? "active" : ""} onClick={() => setShowCompleted((value) => !value)}>已完成</button></div>{calendarMode === "today" && <div className="date-nav"><button onClick={() => shiftDay(-1)} aria-label="前一天"><ChevronLeft size={15} /></button><button onClick={() => setSelectedDate(currentDateKey())}>{selectedDate === currentDateKey() ? "今天" : selectedDate}</button><button onClick={() => shiftDay(1)} aria-label="后一天"><ChevronRight size={15} /></button></div>}</div>
-        {calendarMode === "today" && <HourlyDayTimeline date={selectedDate} now={now} items={todaySchedule} goals={goals} onFeedback={onFeedback} onEdit={onEdit} onAdd={onAdd} onUpdateTime={onUpdateTime} />}
+        {calendarMode === "today" && <HourlyDayTimeline date={selectedDate} now={now} items={todaySchedule} goals={goals} onFeedback={onFeedback} onComplete={onComplete} onEdit={onEdit} onAdd={onAdd} onUpdateTime={onUpdateTime} />}
         {calendarMode === "week" && <WeekCalendar schedule={visibleSchedule} goals={goals} onEdit={onEdit} />}
         {calendarMode === "month" && <MonthCalendar schedule={visibleSchedule} onEdit={onEdit} />}
       </section>
@@ -537,26 +857,75 @@ function TodayView({ goals, schedule, completed, rhythmSignals, onFeedback, onEd
       <aside className="insight-column">
         <section className="gentle-card greeting-card">
           <div className="sun-shape"><span /></div>
-          <span className="section-kicker">此刻</span>
-          <h2>下午适合<br />稳稳推进</h2>
-          <p>上午的高专注任务已经完成。接下来给自己留一点进入状态的空间。</p>
+          <InsightCardHeading
+            kicker="此刻建议"
+            source={momentCard.source}
+            generatedAt={momentCard.generatedAt}
+            showRefresh={useServerInsights}
+            refreshing={refreshingTarget === "moment"}
+            onRefresh={() => void handleRegenerate("moment")}
+          />
+          <h2>{momentCard.headline}</h2>
+          <p>{momentCard.judgment}</p>
+          {momentCard.reason && <p className="insight-reason">{momentCard.reason}</p>}
+          {momentCard.nextLabel && (
+            <p className="insight-next"><strong>推荐下一步：</strong>{momentCard.nextLabel}</p>
+          )}
+          {momentCard.kind === "exhausted" && (
+            <p className="insight-exhausted">本轮候选建议已全部浏览。完成一次执行或调整日程后，系统会生成新的建议。</p>
+          )}
+          {momentCard.kind === "action" && momentActionLabel && (
+            <div className="insight-actions">
+              <button type="button" className="primary-button compact" disabled={momentBusy} onClick={() => void handleApplyMoment()}>
+                {momentActionLabel}
+              </button>
+              {showMomentAlternate && (
+                <button type="button" className="text-link" onClick={() => void onAlternateMoment()}>换个建议</button>
+              )}
+            </div>
+          )}
         </section>
         <section className="gentle-card">
-          <div className="mini-heading"><span className="section-kicker">小律观察</span><Sparkles size={16} /></div>
-          <p className="quote">“{rhythmSignals[0]?.statement ?? "完成几次执行反馈后，这里会出现来自真实数据的节奏发现。"}”</p>
-          <button className="text-link">用于下次安排 <ArrowRight size={14} /></button>
+          <InsightCardHeading
+            kicker="节奏发现"
+            source={rhythmCard.source}
+            generatedAt={rhythmCard.generatedAt}
+            trailing={<Sparkles size={16} />}
+            showRefresh={useServerInsights}
+            refreshing={refreshingTarget === "slow"}
+            onRefresh={() => void handleRegenerate("slow")}
+          />
+          <p className="quote">“{rhythmCard.statement}”</p>
+          {rhythmCard.evidence && <p className="insight-evidence"><strong>证据：</strong>{rhythmCard.evidence}</p>}
+          {rhythmCard.impact && <p className="insight-impact">{rhythmCard.impact}</p>}
+          {rhythmCard.kind === "insight" && rhythmCard.signalId && (
+            <div className="insight-actions">
+              <button type="button" className="text-link" disabled={rhythmCard.preferred} onClick={() => onPreferSignal(rhythmCard.signalId!)}>
+                {rhythmCard.preferred ? "已用于下次安排" : "用于下次安排"} <ArrowRight size={14} />
+              </button>
+            </div>
+          )}
         </section>
         <section className="gentle-card load-card">
-          <div className="mini-heading"><span className="section-kicker">本周负荷</span><span>适中</span></div>
-          <div className="load-bar"><i style={{ width: "68%" }} /></div>
-          <p>已安排 16 小时，完成 8 小时 30 分。周末仍留有恢复空间。</p>
+          <InsightCardHeading
+            kicker="本周轨道"
+            source={weeklyCard.source}
+            generatedAt={weeklyCard.generatedAt}
+            trailing={<span>{weeklyCard.statusLabel}</span>}
+            showRefresh={useServerInsights}
+            refreshing={refreshingTarget === "slow"}
+            onRefresh={() => void handleRegenerate("slow")}
+          />
+          <div className="load-bar"><i style={{ width: `${weeklyLoadPercent}%` }} /></div>
+          <p>{weeklyCard.summary}</p>
+          {weeklyCard.suggestion && <p className="insight-suggestion">{weeklyCard.suggestion}</p>}
         </section>
       </aside>
     </div>
   );
 }
 
-function HourlyDayTimeline({ date, now, items, goals, onFeedback, onEdit, onAdd, onUpdateTime }: { date: string; now: Date; items: ScheduleItem[]; goals: Goal[]; onFeedback: (id: string) => void; onEdit: (id: string) => void; onAdd: (seed?: ScheduleTimeSeed) => void; onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void> }) {
+function HourlyDayTimeline({ date, now, items, goals, onFeedback, onComplete, onEdit, onAdd, onUpdateTime }: { date: string; now: Date; items: ScheduleItem[]; goals: Goal[]; onFeedback: (id: string) => void; onComplete: (id: string) => void; onEdit: (id: string) => void; onAdd: (seed?: ScheduleTimeSeed) => void; onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void> }) {
   const startHour = 7;
   const endHour = 24;
   const timelineEndMinutes = 24 * 60 + 30;
@@ -583,7 +952,8 @@ function HourlyDayTimeline({ date, now, items, goals, onFeedback, onEdit, onAdd,
   const [timelineMounted, setTimelineMounted] = useState(false);
 
   useEffect(() => {
-    setTimelineMounted(true);
+    const timer = window.setTimeout(() => setTimelineMounted(true), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   /**
@@ -657,7 +1027,7 @@ function HourlyDayTimeline({ date, now, items, goals, onFeedback, onEdit, onAdd,
         {labelMinutes.slice(0, -1).map((minute) => <div className="hour-gridline" key={minute} style={{ top: `${((minute - startMinutes) / 60) * hourHeight}px` }} />)}
         <div className="hour-gridline timeline-end-line" style={{ top: `${timelineHeight}px` }} />
         {timelineMounted && showNow && <div className="current-time-line" style={{ top: `${currentTop}px` }}><span>现在 {formatTimeInTimezone(now, currentTimezone())}</span><i /></div>}
-        {items.map((item) => <HourBlock key={item.id} item={item} goals={goals} startHour={startHour} endHour={endHour} hourHeight={hourHeight} onFeedback={onFeedback} onEdit={onEdit} onUpdateTime={onUpdateTime} />)}
+        {items.map((item) => <HourBlock key={item.id} item={item} goals={goals} startHour={startHour} endHour={endHour} hourHeight={hourHeight} onFeedback={onFeedback} onComplete={onComplete} onEdit={onEdit} onUpdateTime={onUpdateTime} />)}
         {!items.length && <div className="hourly-empty"><Leaf size={18} /><strong>这一天还没有安排</strong><span>留白也可以，或放入一件真正想推进的事。</span><button onClick={() => onAdd({ date })}><Plus size={14} />安排一件事</button></div>}
       </div>
     </div>
@@ -670,13 +1040,14 @@ type HourBlockDragKind = "move" | "resize-start" | "resize-end";
 /**
  * 日视图中的单个日程块，支持拖动整体移动与上下边缘调整时长。
  */
-function HourBlock({ item, goals, startHour, endHour, hourHeight, onFeedback, onEdit, onUpdateTime }: {
+function HourBlock({ item, goals, startHour, endHour, hourHeight, onFeedback, onComplete, onEdit, onUpdateTime }: {
   item: ScheduleItem;
   goals: Goal[];
   startHour: number;
   endHour: number;
   hourHeight: number;
   onFeedback: (id: string) => void;
+  onComplete: (id: string) => void;
   onEdit: (id: string) => void;
   onUpdateTime: (item: ScheduleItem, start: string, end: string) => Promise<void>;
 }) {
@@ -800,10 +1171,13 @@ function HourBlock({ item, goals, startHour, endHour, hourHeight, onFeedback, on
         <div className="hour-block-aside">
           <span className="hour-block-duration">{minutesToCompact(durationMinutes(displayStart, displayEnd))}</span>
           <div className="hour-block-aside-actions">
-            {item.status !== "completed" && item.kind !== "personal" && (
-              <button type="button" className="hour-block-feedback-btn" onClick={() => onFeedback(item.id)}>记录执行</button>
+            {item.status !== "completed" && item.kind === "personal" && (
+              <button type="button" className="hour-block-feedback-btn hour-block-complete-btn" onClick={(event) => { event.stopPropagation(); void onComplete(item.id); }}>完成</button>
             )}
-            <button type="button" className="hour-block-more-btn" aria-label={`编辑 ${item.title}`} onClick={() => onEdit(item.id)}><MoreHorizontal size={16} /></button>
+            {item.status !== "completed" && item.kind !== "personal" && (
+              <button type="button" className="hour-block-feedback-btn" onClick={(event) => { event.stopPropagation(); onFeedback(item.id); }}>记录执行</button>
+            )}
+            <button type="button" className="hour-block-more-btn" aria-label={`编辑 ${item.title}`} onClick={(event) => { event.stopPropagation(); onEdit(item.id); }}><MoreHorizontal size={16} /></button>
           </div>
         </div>
       </div>
@@ -937,10 +1311,12 @@ function GoalsView({ goals, onAdd, onOpen }: { goals: Goal[]; onAdd: () => void;
             const progress = goal.tasksTotal ? Math.round((goal.tasksDone / goal.tasksTotal) * 100) : 0;
             return (
               <article className="goal-row" key={goal.id}>
-                <div className={`goal-symbol ${goal.color}`}><Flag size={18} /></div>
-                <div className="goal-copy"><div className="goal-title-line"><h3>{goal.title}</h3><span className={clsx("status-pill", goal.status)}>{goal.status === "active" ? "推进中" : goal.status === "draft" ? "待澄清" : "已暂停"}</span></div><p>{goal.description}</p><div className="goal-stats"><span>本周 {minutesToText(goal.completedMinutes)}</span><span>{goal.tasksDone}/{goal.tasksTotal || "—"} 个任务</span></div></div>
-                <div className="goal-progress"><strong>{progress}%</strong><div><i style={{ width: `${progress}%` }} /></div></div>
-                <button className="icon-button" aria-label={`打开 ${goal.title}`} onClick={() => onOpen(goal.id)}><ChevronRight size={19} /></button>
+                <button type="button" className="goal-row-open" onClick={() => onOpen(goal.id)} aria-label={`查看目标详情：${goal.title}`}>
+                  <div className={`goal-symbol ${goal.color}`}><Flag size={18} /></div>
+                  <div className="goal-copy"><div className="goal-title-line"><h3>{goal.title}</h3><span className={clsx("status-pill", goal.status)}>{goal.status === "active" ? "推进中" : goal.status === "draft" ? "待澄清" : "已暂停"}</span></div><p>{goal.description}</p><div className="goal-stats"><span>本周 {minutesToText(goal.completedMinutes)}</span><span>{goal.tasksDone}/{goal.tasksTotal || "—"} 个任务</span></div></div>
+                  <div className="goal-progress"><strong>{progress}%</strong><div><i style={{ width: `${progress}%` }} /></div></div>
+                  <span className="goal-row-chevron" aria-hidden="true"><ChevronRight size={19} /></span>
+                </button>
               </article>
             );
           })}
@@ -1484,6 +1860,20 @@ function AgentPanel({ open, onClose, goals, schedule, view, provider, model, sel
       return;
     }
     if (event.type === "loop_step") {
+      const loopStatusLabels: Record<string, string> = {
+        verification: "正在验证结果…",
+        decision: "正在判断下一步…",
+        recovery: "正在尝试修复…",
+        final: "正在整理结果…",
+      };
+      const nextPhaseLabel = loopStatusLabels[event.kind];
+      if (nextPhaseLabel) {
+        if (event.kind === "verification" && event.nextAction === "call_tool") {
+          setStatusText("正在继续分析…");
+        } else {
+          setStatusText(nextPhaseLabel);
+        }
+      }
       patchStreamingSteps((steps) => [...steps, {
         id: `${event.kind}-${steps.length}`,
         label: event.label,
@@ -1498,6 +1888,7 @@ function AgentPanel({ open, onClose, goals, schedule, view, provider, model, sel
       return;
     }
     if (event.type === "tool_completed") {
+      setStatusText("正在验证工具结果…");
       patchStreamingSteps((steps) => {
         const next = [...steps];
         const index = next.findLastIndex((step) => step.label === (event.label ?? event.tool) && step.status === "running");
