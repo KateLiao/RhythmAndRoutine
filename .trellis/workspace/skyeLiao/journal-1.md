@@ -71,3 +71,37 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: 回顾节奏评估闭环
+
+**Date**: 2026-07-11
+**Task**: 回顾节奏评估闭环
+**Branch**: `main`
+
+### Summary
+
+完成 v0.3 回顾-记录后的节奏评估：真实日/周回顾生成、Task 完成语义修正、回顾页两栏评估 UI、报告语言约束与文档同步。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7af1e24` | (see git log) |
+| `2cf916f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
