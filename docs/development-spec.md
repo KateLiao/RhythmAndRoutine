@@ -136,6 +136,7 @@ draft | awaiting_confirmation | approved | rejected | applied | failed
 - Vercel 作为首选部署平台。
 - 定时任务触发日回顾和周回顾；执行逻辑必须幂等（幂等键 `${userId}:${type}:${periodStart}:${periodEnd}`），手动触发与定时触发共用同一服务（`generateReview`）。默认日回顾时间与周回顾时间均为用户时区 `23:00`（周回顾默认周日），用户可在设置中调整。回顾页在新周期生成前展示上一份回顾（「昨日回顾」/「上周回顾」语义）。
 - 日回顾聚焦当日执行与感受的「收尾评估」，周回顾聚焦节奏与目标校准；两者共用同一份增强输出 schema（`summary`/`findings`/`suggestions`/`source` 必填，`sessionHighlights`/`rhythmNotes`/`taskProgressNotes`/`routineNotes`/`goalCheckSuggestions`/`nextCycleSuggestions` 为可选区块），日回顾通常只填前者，周回顾按需填充后者。周回顾的 LLM 输入在服务端做确定性压缩（数字先算好、日回顾 findings 作先验、用户 note 与异常优先摘录、普通完成块只进聚合计数），不会把整周逐条日程原文传给模型。回顾正文中的「建议检查/建议确认」措辞不代表 Task、Milestone 或 Outcome 已完成，最终确认动作仍分别走 Task 完成、Milestone/Outcome 确认的既有接口。
+- 回顾报告是用户可见的自然中文产品文案，不是数据审计或调试日志；生成 prompt 与展示层都必须避免暴露数据库/API/JSON 字段名、英文枚举值、布尔值或代码式键值对。`tags`、`comfortable`、`timeFit`、`quality`、`status`、`result`、`smooth`、`good`、`great` 等内部参数只能作为证据读取，输出给用户时必须改写为「反馈较顺畅」「时间安排比较匹配」「质量反馈很好」等中文表达；报告称谓使用第二人称「你」，不得写「用户如何如何」。
 - 默认时区为 `Asia/Shanghai`，时间存储使用 UTC，展示与调度使用用户时区。
 
 ### 5.2 账号边界

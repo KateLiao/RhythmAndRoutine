@@ -10,7 +10,7 @@ import { expandRoutineOccurrences } from "@/server/services/routines";
 import { zonedDateKey } from "@/lib/timezone";
 
 /** 写入 prompt 的产品约束：结束后才记录执行；不得捏造；不得替用户宣布完成。 */
-const PRODUCT_CONSTRAINTS = "用户只在日程结束后记录执行结果；status=planned 且计划时间已过，不代表用户没有开始，只是还没回来记录。禁止编造未在数据中出现的内容。必须区分「事实」与「你的判断」。不得在任何字段中宣布 Task、Milestone 或 Outcome 已经完成——最多只能说「建议检查」或「建议确认」，最终是否完成由用户自己确认。";
+const PRODUCT_CONSTRAINTS = "用户只在日程结束后记录执行结果；status=planned 且计划时间已过，不代表用户没有开始，只是还没回来记录。禁止编造未在数据中出现的内容。必须区分「事实」与「你的判断」。最终输出是直接写给当前用户看的产品报告，不是数据审计或调试日志：必须使用「你」作为称谓，禁止使用「用户」「该用户」「这位用户」等第三人称表述；禁止暴露任何数据库/API/JSON 字段名、英文枚举值、布尔值、代码式键值对或带字段名的括号说明，例如 tags、comfortable、timeFit、quality、status、result、smooth、good、great、comfortable: true、时间适配度（timeFit）='good' 都不能出现在用户可见字段中。所有内部参数只用于理解证据，输出时必须改写为自然中文，例如“反馈较顺畅”“时间安排比较匹配”“质量反馈很好”“执行中有阻力”。不得在任何字段中宣布 Task、Milestone 或 Outcome 已经完成——最多只能说「建议检查」或「建议确认」，最终是否完成由用户自己确认。";
 
 /** 单条日程块携带的原始执行与反馈事实，daily/weekly facts 组装共用。 */
 type PeriodBlock = {
@@ -576,7 +576,7 @@ ${JSON.stringify(facts.activeRhythmSignals, null, 2)}
 
 产品约束：${PRODUCT_CONSTRAINTS}
 
-特别注意：如果任意日程块的 note 字段非空，必须在 summary 或 findings 中优先引用、回应它的具体内容，不能只统计标签次数、忽略用户的原话。
+特别注意：如果任意日程块的 note 字段非空，必须在 summary 或 findings 中优先引用、回应它的具体内容，不能只统计标签次数、忽略用户的原话。所有字段都必须直接对当前用户说话，使用「你」而不是「用户」。报告语言必须像产品里的自然中文说明，不得出现字段名、英文枚举值、代码符号、键值对或“字段名（英文参数）=枚举值”的表达。
 
 请生成结构化回顾：
 - summary：1-3 句概述今天执行情况和整体节奏
@@ -590,7 +590,7 @@ ${JSON.stringify(facts.activeRhythmSignals, null, 2)}
 
     return await adapter.generateObject({
       model,
-      system: "你是 Rhythm & Routine 的节奏分析助手。基于真实执行数据生成客观、支持性的日回顾，区分事实与判断，优先回应用户的自然语言感受。",
+      system: "你是 Rhythm & Routine 的节奏分析助手。基于真实执行数据生成客观、支持性的日回顾，区分事实与判断，优先回应用户的自然语言感受。输出直接面向当前用户，必须使用第二人称「你」，不要写「用户如何如何」。输入中的字段名、枚举值和布尔值都是内部参数，不能原样展示给用户；最终文案必须是自然中文产品报告，不能像数据审计、JSON 解释或调试日志。",
       prompt,
       schema: reviewResultSchema,
       maxOutputTokens: 1400,
@@ -643,7 +643,7 @@ ${JSON.stringify(facts.activeRhythmSignals, null, 2)}
 
 产品约束：${PRODUCT_CONSTRAINTS}
 
-重要：只能基于以上数字与摘录下结论；证据不足的地方要如实说明「数据不足」，禁止脑补。摘录或代表块中若出现用户的自然语言感受（note），至少一条 finding 或 rhythmNotes 需要回应其具体内容。goalCheckSuggestions 与 taskProgressNotes 只能使用「建议检查/建议确认」的措辞，绝不能宣布 Milestone、Outcome 或 Task 已经完成。
+重要：只能基于以上数字与摘录下结论；证据不足的地方要如实说明「数据不足」，禁止脑补。摘录或代表块中若出现用户的自然语言感受（note），至少一条 finding 或 rhythmNotes 需要回应其具体内容。所有字段都必须直接对当前用户说话，使用「你」而不是「用户」。报告语言必须像产品里的自然中文说明，不得出现字段名、英文枚举值、代码符号、键值对或“字段名（英文参数）=枚举值”的表达。goalCheckSuggestions 与 taskProgressNotes 只能使用「建议检查/建议确认」的措辞，绝不能宣布 Milestone、Outcome 或 Task 已经完成。
 
 请生成结构化回顾：
 - summary：1-3 句概述本周执行情况和整体节奏
@@ -659,7 +659,7 @@ ${JSON.stringify(facts.activeRhythmSignals, null, 2)}
 
     return await adapter.generateObject({
       model,
-      system: "你是 Rhythm & Routine 的节奏分析助手。基于已压缩的真实执行数据生成客观、支持性的周回顾，严格区分事实与判断，绝不替用户宣布任务或目标已完成。",
+      system: "你是 Rhythm & Routine 的节奏分析助手。基于已压缩的真实执行数据生成客观、支持性的周回顾，严格区分事实与判断，绝不替用户宣布任务或目标已完成。输出直接面向当前用户，必须使用第二人称「你」，不要写「用户如何如何」。输入中的字段名、枚举值和布尔值都是内部参数，不能原样展示给用户；最终文案必须是自然中文产品报告，不能像数据审计、JSON 解释或调试日志。",
       prompt,
       schema: reviewResultSchema,
       maxOutputTokens: 2000,

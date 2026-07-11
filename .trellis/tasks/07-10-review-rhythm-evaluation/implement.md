@@ -83,13 +83,15 @@ npm run lint
 - [x] 确认 / 重新生成 / 请小律解释
 - [x] 空态：尚无昨日/上周回顾时的说明（等待 23:00 或手动生成）
 - [x] 失败态：可重新生成
+- [x] 验证后追加 UI 调整：删除「周期存档/历史回顾」临时入口，历史数据继续入库；左侧主报告只保留 Hero + 关键发现 + 建议，右侧栏承载补充观察与周确认区。
+- [x] 验证后追加报告语言约束：prompt 明确要求自然中文产品报告，不暴露字段名、英文枚举值、布尔值或代码式键值对；前端展示层对旧回顾做第二人称与参数中文化兜底。
 
 ---
 
 ## 7. 规格与需求文档收尾
 
 - [x] `docs/development-spec.md` 同步
-- [x] `docs/v0.3.0 版本需求/新增特性-回顾节奏评估.md`（实现与需求文档一致，未回写偏差）
+- [x] `docs/v0.3.0 版本需求/新增特性-回顾节奏评估.md` 同步最终 UI 布局、报告语言原则与实现状态
 - [x] `0.3.0 版本需求清单` 第 2 项标记完成（验收通过后）
 
 ---
@@ -113,6 +115,8 @@ npm run build
 5. ✅ 幂等：同一 idempotencyKey 重复 POST 只更新同一行（`upsert`），未观察到重复记录。
 6. ✅ 规则降级：临时强制 `tryAIDailyReview`/`tryAIWeeklyReview` 返回 null 验证 `buildRulesDailyReview`/`buildRulesWeeklyReview` 均能产出可读回顾且 `source="rules"`；验证后已移除临时代码并重新生成 AI 版本恢复正常数据。
 7. ✅ 确认/撤销确认：`PATCH /api/reviews/:id` 切换 `confirmed`/`draft` 状态与 `confirmedAt` 正确。
+8. ✅ UI 复核：宽屏两栏布局无首屏右侧空白；补充观察位于右侧栏，主报告字号/颜色更适合阅读；历史回顾入口暂不展示。
+9. ✅ 文案复核：报告生成 prompt 与展示层均限制内部参数露出，`timeFit` / `quality` / `smooth` / `comfortable: true` 等不得以代码参数形式出现在用户可见报告中。
 
 ---
 

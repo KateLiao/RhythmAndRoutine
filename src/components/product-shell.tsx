@@ -1,14 +1,20 @@
 "use client";
 
 import {
+  AlertTriangle,
   ArrowRight,
   CalendarDays,
   Check,
   ChevronLeft,
   ChevronRight,
+  CircleCheck,
+  Clock,
   Flag,
   Infinity,
   Leaf,
+  Lightbulb,
+  ListChecks,
+  Loader2,
   Maximize2,
   Menu,
   Minimize2,
@@ -1685,19 +1691,68 @@ function TaskDetailView({ goal, task, schedule, rhythmSignals, editing, onEditin
 
 type ReviewContentTextKey = Exclude<keyof ReviewContent, "readyForCompletionTasks">;
 
-/** D5 评估正文的可选区块，标题与取值字段一一对应；无值的区块不渲染。 */
-const REVIEW_CONTENT_SECTIONS: Array<{ key: ReviewContentTextKey; title: string }> = [
-  { key: "sessionHighlights", title: "执行亮点" },
-  { key: "rhythmNotes", title: "节奏解读" },
-  { key: "taskProgressNotes", title: "任务进展" },
-  { key: "routineNotes", title: "Routine 坚持" },
-  { key: "goalCheckSuggestions", title: "建议检查" },
-  { key: "nextCycleSuggestions", title: "下一步的轻量建议" },
+/** D5 评估正文的可选区块：标题、图标与取值字段一一对应；`accent` 决定卡片的强调色，无值的区块不渲染。 */
+const REVIEW_CONTENT_SECTIONS: Array<{ key: ReviewContentTextKey; title: string; icon: typeof Sparkles; accent: "violet" | "sage" | "gold" | "coral" }> = [
+  { key: "sessionHighlights", title: "执行亮点", icon: Sparkles, accent: "gold" },
+  { key: "rhythmNotes", title: "节奏解读", icon: Leaf, accent: "sage" },
+  { key: "taskProgressNotes", title: "任务进展", icon: Target, accent: "violet" },
+  { key: "routineNotes", title: "Routine 坚持", icon: RotateCcw, accent: "sage" },
+  { key: "goalCheckSuggestions", title: "建议检查", icon: Flag, accent: "coral" },
+  { key: "nextCycleSuggestions", title: "下一步的轻量建议", icon: ArrowRight, accent: "violet" },
 ];
+
+/** 依据回顾状态与是否正在生成，返回状态徽标的文案、图标与配色基调，供 hero 徽标与空态统一复用。 */
+function reviewStatusMeta(status: ReviewRecord["status"] | undefined, isBusy: boolean): { label: string; icon: typeof Clock; tone: "confirmed" | "pending" | "generating" | "failed" } {
+  if (isBusy) return { label: "生成中", icon: Loader2, tone: "generating" };
+  if (status === "confirmed") return { label: "已确认", icon: CircleCheck, tone: "confirmed" };
+  if (status === "failed") return { label: "生成失败", icon: AlertTriangle, tone: "failed" };
+  return { label: "待确认", icon: Clock, tone: "pending" };
+}
+
+/**
+ * 回顾正文直接面向当前用户展示，把模型偶尔生成的第三人称称谓与内部参数名转换为自然中文。
+ * @param text - AI / 规则生成的回顾文案
+ */
+function secondPersonReviewText(text: string) {
+  return text
+    .replace(/该用户/g, "你")
+    .replace(/这位用户/g, "你")
+    .replace(/用户的/g, "你的")
+    .replace(/用户/g, "你")
+    .replace(/时间适配度（\s*timeFit\s*）均为[`'"]?good[`'"]?/gi, "时间安排整体比较匹配")
+    .replace(/时间适配度（\s*timeFit\s*）均为[`'"]?neutral[`'"]?/gi, "时间安排整体基本匹配")
+    .replace(/时间适配度（\s*timeFit\s*）均为[`'"]?poor[`'"]?/gi, "时间安排整体不太匹配")
+    .replace(/质量评估分别为[`'"]?great[`'"]?和[`'"]?good[`'"]?/gi, "质量反馈从很好到较好")
+    .replace(/质量评估(?:分别)?为[`'"]?great[`'"]?/gi, "质量反馈很好")
+    .replace(/质量评估(?:分别)?为[`'"]?good[`'"]?/gi, "质量反馈较好")
+    .replace(/质量评估(?:分别)?为[`'"]?fair[`'"]?/gi, "质量反馈一般")
+    .replace(/质量评估(?:分别)?为[`'"]?poor[`'"]?/gi, "质量反馈不佳")
+    .replace(/（\s*(?:timeFit|quality|comfortable|tags|status|result|feedbackTags)\s*）/gi, "")
+    .replace(/[`'"]?smooth[`'"]?\s*（顺畅）?/gi, "顺畅")
+    .replace(/[`'"]?resistant[`'"]?\s*（有阻力）?/gi, "有阻力")
+    .replace(/[`'"]?barely_completed[`'"]?\s*（勉强完成）?/gi, "勉强完成")
+    .replace(/[`'"]?high_energy[`'"]?\s*（状态很好）?/gi, "状态很好")
+    .replace(/[`'"]?low_energy[`'"]?\s*（状态很差）?/gi, "状态很差")
+    .replace(/[`'"]?interrupted[`'"]?\s*（被打断）?/gi, "被打断")
+    .replace(/[`'"]?not_started[`'"]?\s*（没开始）?/gi, "没开始")
+    .replace(/\(?\s*[`'"]?comfortable[`'"]?\s*[:=]\s*true\s*\)?/gi, "感受顺畅")
+    .replace(/\(?\s*[`'"]?comfortable[`'"]?\s*[:=]\s*false\s*\)?/gi, "感受不顺畅")
+    .replace(/[`'"]?timeFit[`'"]?\s*[:=]\s*[`'"]?good[`'"]?/gi, "时间匹配")
+    .replace(/[`'"]?timeFit[`'"]?\s*[:=]\s*[`'"]?neutral[`'"]?/gi, "时间基本匹配")
+    .replace(/[`'"]?timeFit[`'"]?\s*[:=]\s*[`'"]?poor[`'"]?/gi, "时间不太匹配")
+    .replace(/[`'"]?quality[`'"]?\s*[:=]\s*[`'"]?great[`'"]?/gi, "质量很好")
+    .replace(/[`'"]?quality[`'"]?\s*[:=]\s*[`'"]?good[`'"]?/gi, "质量较好")
+    .replace(/[`'"]?quality[`'"]?\s*[:=]\s*[`'"]?fair[`'"]?/gi, "质量一般")
+    .replace(/[`'"]?quality[`'"]?\s*[:=]\s*[`'"]?poor[`'"]?/gi, "质量不佳")
+    .replace(/[`'"]great[`'"]/gi, "很好")
+    .replace(/[`'"]good[`'"]/gi, "较好")
+    .replace(/[`'"]fair[`'"]/gi, "一般")
+    .replace(/[`'"]poor[`'"]/gi, "不佳");
+}
 
 function ReviewView({ goals, reviews, timezone, onGenerate, onConfirm, onConfirmOutcome, onConfirmMilestone, onCompleteTask, onAskAgent }: { goals: Goal[]; reviews: ReviewRecord[]; timezone: string; onGenerate: (type: "daily" | "weekly") => void; onConfirm: (review: ReviewRecord) => void; onConfirmOutcome: (goalId: string, outcome: NonNullable<Goal["outcomes"]>[number]) => void; onConfirmMilestone: (goalId: string, milestone: NonNullable<Goal["milestones"]>[number]) => void; onCompleteTask: (goalId: string, taskId: string) => void; onAskAgent: () => void }) {
   const [type, setType] = useState<"daily" | "weekly">("weekly");
-  const latest = reviews.find((review) => review.type === type) ?? null;
+  const latest = reviews.filter((review) => review.type === type).sort((a, b) => b.periodStart.localeCompare(a.periodStart))[0] ?? null;
   const periodLabel = latest ? describeReviewPeriod(type, latest.periodStart, timezone) : type === "weekly" ? "本周" : "今天";
   const metrics = latest?.metrics ?? {};
   const contentSections = latest ? REVIEW_CONTENT_SECTIONS.map((section) => ({ ...section, items: latest.content?.[section.key] ?? [] })).filter((section) => section.items.length > 0) : [];
@@ -1707,61 +1762,98 @@ function ReviewView({ goals, reviews, timezone, onGenerate, onConfirm, onConfirm
   ]).slice(0, 6) : [];
   const readyTasks = type === "weekly" ? (latest?.content?.readyForCompletionTasks ?? []) : [];
   const isBusy = latest?.status === "generating";
+  const statusMeta = reviewStatusMeta(latest?.status, isBusy);
+  const smoothTotal = (metrics.smoothCount ?? 0) + (metrics.resistanceCount ?? 0);
+
+  function generate() { onGenerate(type); }
+
   return (
     <div className="review-page">
-      <section className="review-hero">
-        <div className="review-tabs"><button className={type === "daily" ? "active" : ""} onClick={() => setType("daily")}>日回顾</button><button className={type === "weekly" ? "active" : ""} onClick={() => setType("weekly")}>周回顾</button></div>
-        <span className="section-kicker">{periodLabel}</span>
-        <p className="review-lead">你不是做得更多了，<br />而是更知道什么时候适合做什么。</p>
-        <div className="review-metrics"><div><strong>{metrics.completed ?? 0}/{metrics.total ?? 0}</strong><span>完成日程块</span></div><div><strong>{(metrics.missed ?? 0) + (metrics.rescheduled ?? 0)}</strong><span>未完成/改期</span></div><div><strong>{minutesToCompact(metrics.investedMinutes ?? 0)}</strong><span>真实投入</span></div></div>
-      </section>
+      <div className="review-page-grid">
+        <div className="review-main-stack">
+          <section className="review-hero">
+            <div className="review-hero-top">
+              <div className="review-tabs"><button className={type === "daily" ? "active" : ""} onClick={() => setType("daily")}>日回顾</button><button className={type === "weekly" ? "active" : ""} onClick={() => setType("weekly")}>周回顾</button></div>
+              {latest && <span className={clsx("review-status-pill", statusMeta.tone)}><statusMeta.icon size={11} className={statusMeta.tone === "generating" ? "spin" : ""} />{statusMeta.label}</span>}
+            </div>
+            <span className="review-period"><CalendarDays size={13} />{periodLabel}</span>
+            <p className="review-headline">{latest?.summary ? secondPersonReviewText(latest.summary) : (type === "weekly" ? "本周的节奏与目标校准还没有生成，先手动生成一份看看。" : "今天的收尾评估还没有生成，先手动生成一份看看。")}</p>
+            <div className="review-metrics">
+              <div><strong>{metrics.completed ?? 0}<small>/{metrics.total ?? 0}</small></strong><span>完成日程块</span></div>
+              <div><strong>{(metrics.missed ?? 0) + (metrics.rescheduled ?? 0)}</strong><span>未完成/改期</span></div>
+              <div><strong>{minutesToCompact(metrics.investedMinutes ?? 0)}</strong><span>真实投入</span></div>
+              {smoothTotal > 0 && <div><strong>{metrics.smoothCount ?? 0}<small>·{metrics.resistanceCount ?? 0}</small></strong><span>顺畅·阻力</span></div>}
+            </div>
+          </section>
 
-      {!latest && (
-        <section className="saved-review review-empty">
-          <div>
-            <span className="section-kicker">尚无回顾</span>
-            <h2>{type === "weekly" ? "等待周日 23:00 自动生成" : "等待每晚 23:00 自动生成"}</h2>
-            <p>也可以点击下方按钮手动生成一份{type === "weekly" ? "本周" : "今日"}回顾。</p>
-          </div>
-        </section>
-      )}
-
-      {latest && (
-        <section className={clsx("saved-review", latest.status === "failed" && "review-failed")}>
-          <div>
-            <span className="section-kicker">评估状态</span>
-            <h2>{latest.status === "confirmed" ? "这份回顾已经确认" : latest.status === "failed" ? "这份回顾生成失败" : isBusy ? "正在生成回顾" : "这份回顾等待你确认"}</h2>
-            <p>{latest.summary || (latest.status === "failed" ? "数据仍然安全保留，可以重新生成。" : "正在整理真实执行记录…")}</p>
-          </div>
-          {latest.findings?.length > 0 && <ul className="review-findings">{latest.findings.map((finding) => <li key={finding}>{finding}</li>)}</ul>}
-          {latest.suggestions?.length > 0 && <div className="review-content-block"><span className="section-kicker">建议</span><ul>{latest.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul></div>}
-          {contentSections.map((section) => <div className="review-content-block" key={section.key}><span className="section-kicker">{section.title}</span><ul>{section.items.map((item) => <li key={item}>{item}</li>)}</ul></div>)}
-        </section>
-      )}
-
-      {type === "weekly" && (confirmationItems.length > 0 || readyTasks.length > 0) && (
-        <section className="review-confirmations">
-          <div><span className="section-kicker">只由你确认</span><h2>阶段与结果</h2><p>系统只提供执行证据，不替你判断目标或任务是否达成、完成。</p></div>
-          <div>
-            {confirmationItems.map(({ kind, goal, item }) => <article key={item.id}><span>{kind === "milestone" ? "里程碑" : "结果指标"} · {goal.title}</span><strong>{"title" in item ? item.title : item.description}</strong><button onClick={() => kind === "milestone" ? onConfirmMilestone(goal.id, item) : onConfirmOutcome(goal.id, item)}>确认完成</button></article>)}
-            {readyTasks.map((task) => <article key={task.taskId}><span>任务 · {task.goalTitle ?? ""}</span><strong>{task.title}</strong><button onClick={() => onCompleteTask(task.goalId, task.taskId)}>确认完成</button></article>)}
-          </div>
-        </section>
-      )}
-
-      <section className="review-actions">
-        <div className="button-row">
-          {!latest || latest.status === "failed" ? (
-            <button className="primary-button" onClick={() => onGenerate(type)}><RefreshCcw size={15} />{latest ? "重新生成" : "手动生成"}{type === "weekly" ? "本周" : "今日"}回顾</button>
-          ) : (
-            <>
-              {!isBusy && <button className="primary-button" onClick={() => onConfirm(latest)}>{latest.status === "confirmed" ? "撤销确认" : "确认这份回顾"}</button>}
-              <button className="soft-button" onClick={() => onGenerate(type)} disabled={isBusy}><RefreshCcw size={14} />重新生成</button>
-            </>
+          {!latest && (
+            <section className="review-empty">
+              <Clock size={22} />
+              <h2>{type === "weekly" ? "等待周日 23:00 自动生成" : "等待每晚 23:00 自动生成"}</h2>
+              <p>也可以点击下方按钮手动生成一份{type === "weekly" ? "本周" : "今日"}回顾。</p>
+            </section>
           )}
-          <button className="soft-button" onClick={onAskAgent}>请小律解释</button>
+
+          {latest && (
+            <section className={clsx("review-body", latest.status === "failed" && "review-failed")}>
+              {latest.status === "failed" && <p className="review-body-note"><AlertTriangle size={13} />数据仍然安全保留，可以重新生成。</p>}
+              {isBusy && <p className="review-body-note"><Loader2 size={13} className="spin" />正在整理真实执行记录…</p>}
+              {latest.findings?.length > 0 && (
+                <div className="review-section accent-violet">
+                  <div className="review-section-head"><Lightbulb size={15} /><h3>关键发现</h3></div>
+                  <ul>{latest.findings.map((finding) => <li key={finding}>{secondPersonReviewText(finding)}</li>)}</ul>
+                </div>
+              )}
+              {latest.suggestions?.length > 0 && (
+                <div className="review-section accent-gold">
+                  <div className="review-section-head"><ListChecks size={15} /><h3>建议</h3></div>
+                  <ul>{latest.suggestions.map((suggestion) => <li key={suggestion}>{secondPersonReviewText(suggestion)}</li>)}</ul>
+                </div>
+              )}
+            </section>
+          )}
+
+          <section className="review-actions">
+            <div className="button-row">
+              {!latest || latest.status === "failed" ? (
+                <button className="primary-button" onClick={generate}><RefreshCcw size={15} />{latest ? "重新生成" : "手动生成"}{type === "weekly" ? "本周" : "今日"}回顾</button>
+              ) : (
+                <>
+                  {!isBusy && <button className="primary-button" onClick={() => onConfirm(latest)}>{latest.status === "confirmed" ? "撤销确认" : "确认这份回顾"}</button>}
+                  <button className="soft-button" onClick={generate} disabled={isBusy}><RefreshCcw size={14} />重新生成</button>
+                </>
+              )}
+              <button className="soft-button" onClick={onAskAgent}>请小律解释</button>
+            </div>
+          </section>
         </div>
-      </section>
+
+        <aside className="review-side-stack">
+          {contentSections.length > 0 && (
+            <section className="review-side-card">
+              <div className="review-side-card-head"><span className="section-kicker">补充观察</span><h3>节奏细节</h3></div>
+              <div className="review-side-sections">
+                {contentSections.map((section) => (
+                  <div className={clsx("review-section compact", `accent-${section.accent}`)} key={section.key}>
+                    <div className="review-section-head"><section.icon size={14} /><h3>{section.title}</h3></div>
+                    <ul>{section.items.map((item) => <li key={item}>{secondPersonReviewText(item)}</li>)}</ul>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {type === "weekly" && (confirmationItems.length > 0 || readyTasks.length > 0) && (
+            <section className="review-confirmations compact">
+              <div><span className="section-kicker">只由你确认</span><h3>阶段与结果</h3><p>系统只提供执行证据，不替你判断目标或任务是否达成、完成。</p></div>
+              <div>
+                {confirmationItems.map(({ kind, goal, item }) => <article key={item.id}><span>{kind === "milestone" ? "里程碑" : "结果指标"} · {goal.title}</span><strong>{"title" in item ? item.title : item.description}</strong><button onClick={() => kind === "milestone" ? onConfirmMilestone(goal.id, item) : onConfirmOutcome(goal.id, item)}>确认完成</button></article>)}
+                {readyTasks.map((task) => <article key={task.taskId}><span>任务 · {task.goalTitle ?? ""}</span><strong>{task.title}</strong><button onClick={() => onCompleteTask(task.goalId, task.taskId)}>确认完成</button></article>)}
+              </div>
+            </section>
+          )}
+        </aside>
+      </div>
     </div>
   );
 }
