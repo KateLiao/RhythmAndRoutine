@@ -100,9 +100,9 @@ model User {
   id               String   @id @default(cuid())
   displayName      String
   timezone         String   @default("Asia/Shanghai")
-  dailyReviewTime  String   @default("21:30")
+  dailyReviewTime  String   @default("23:00")
   weeklyReviewDay  Int      @default(0)
-  weeklyReviewTime String   @default("20:30")
+  weeklyReviewTime String   @default("23:00")
   defaultModel     String   @default("qwen-plus")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -347,6 +347,7 @@ model Review {
   metrics     Json?
   findings    Json?
   suggestions Json?
+  content     Json?
   confirmedAt DateTime?
   idempotencyKey String    @unique
   createdAt   DateTime     @default(now())

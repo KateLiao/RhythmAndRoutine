@@ -6,7 +6,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  CircleDot,
   Flag,
   Infinity,
   Leaf,
@@ -28,7 +27,7 @@ import { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Goal, buildLocalTaskCompletionRecord, initialGoals, initialSchedule, resolveScheduleTaskIds, scheduleInvestedMinutes, scheduleLinksTask, taskInvestedMinutes, ScheduleItem } from "@/lib/demo-data";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
-import { agentRunApi, changeSetApi, homeInsightsApi, loadModelProviders, loadWorkspace, reviewApi, settingsApi, streamChatWithAgent, workspaceApi, type AgentChangeSet, type AgentRunHistory, type AgentStreamEvent, type ApiHomeInsights, type HomeInsightProposedChange, type ModelProviderInfo, type ReviewRecord, type RhythmSignalRecord, type UserSettings } from "@/lib/client-api";
+import { agentRunApi, changeSetApi, homeInsightsApi, loadModelProviders, loadWorkspace, reviewApi, settingsApi, streamChatWithAgent, workspaceApi, type AgentChangeSet, type AgentRunHistory, type AgentStreamEvent, type ApiHomeInsights, type HomeInsightProposedChange, type ModelProviderInfo, type ReviewContent, type ReviewRecord, type RhythmSignalRecord, type UserSettings } from "@/lib/client-api";
 import { AgentMarkdown } from "@/components/agent-markdown";
 import { AgentProcessSteps, type AgentProcessStep } from "@/components/agent-process-steps";
 import { formatChangeOperationFieldValue, resolveChangeOperationFields, resolveChangeOperationLabel, resolveChangeOperationTitle } from "@/lib/change-operation-display";
@@ -82,7 +81,7 @@ export function ProductShell() {
   const [selectedModel, setSelectedModel] = useState("");
   const [reviews, setReviews] = useState<ReviewRecord[]>([]);
   const [rhythmSignals, setRhythmSignals] = useState<RhythmSignalRecord[]>([]);
-  const [userSettings, setUserSettings] = useState<UserSettings>({ timezone: "Asia/Shanghai", dailyReviewTime: "21:30", weeklyReviewDay: 0, weeklyReviewTime: "20:30", defaultModel: "qwen-plus" });
+  const [userSettings, setUserSettings] = useState<UserSettings>({ timezone: "Asia/Shanghai", dailyReviewTime: "23:00", weeklyReviewDay: 0, weeklyReviewTime: "23:00", defaultModel: "qwen-plus" });
   const [agentOpen, setAgentOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [taskDetailEditing, setTaskDetailEditing] = useState(false);
@@ -646,7 +645,7 @@ export function ProductShell() {
         {view === "goal-detail" && selectedGoal && <GoalDetailView goal={selectedGoal} schedule={schedule} reviews={reviews} rhythmSignals={rhythmSignals} onOpenTask={(taskId) => { setSelectedTaskId(taskId); setTaskDetailEditing(false); setView("task-detail"); }} onAddTask={openTaskCreateModal} onEditTask={openTaskEditModal} onDeleteTask={(taskId) => { const task = selectedGoal.tasks?.find((entry) => entry.id === taskId); if (task && window.confirm(`确定删除任务「${task.title}」？`)) void archiveTaskById(selectedGoal.id, taskId); }} onArrange={(seed) => openScheduleModal(seed)} onAskAgent={() => setAgentOpen(true)} />}
         {view === "task-detail" && selectedGoal && selectedTask && <TaskDetailView goal={selectedGoal} task={selectedTask} schedule={schedule} rhythmSignals={rhythmSignals} editing={taskDetailEditing} onEditingChange={setTaskDetailEditing} onSave={(patch) => saveTaskEdits(selectedGoal.id, selectedTask.id, patch, { keepModalOpen: true }).then(() => setTaskDetailEditing(false))} onComplete={() => completeTaskWithAi(selectedGoal.id, selectedTask.id)} onArrange={() => openScheduleModal({ goalId: selectedGoal.id, taskId: selectedTask.id })} onEditSchedule={(id) => { setSelectedBlock(id); setModal("schedule-edit"); }} onFeedback={openFeedback} onAskAgent={() => setAgentOpen(true)} />}
         {view === "routines" && <RoutinesView goals={goals} schedule={schedule} selectedRoutineId={selectedRoutineId} timezone={userSettings.timezone} onSelect={setSelectedRoutineId} onEdit={(id) => { setSelectedRoutineId(id); setModal("routine"); }} onQuickSave={saveRoutineQuickSettings} onFeedback={openFeedback} onAskAgent={() => setAgentOpen(true)} />}
-        {view === "review" && <ReviewView goals={goals} schedule={schedule} reviews={reviews} onGenerate={(type) => void generateReview(type)} onConfirm={(review) => void confirmReview(review)} onConfirmOutcome={(goalId, outcome) => void confirmOutcome(goalId, outcome)} onConfirmMilestone={(goalId, milestone) => void confirmMilestone(goalId, milestone)} onAskAgent={() => setAgentOpen(true)} />}
+        {view === "review" && <ReviewView goals={goals} reviews={reviews} timezone={userSettings.timezone} onGenerate={(type) => void generateReview(type)} onConfirm={(review) => void confirmReview(review)} onConfirmOutcome={(goalId, outcome) => void confirmOutcome(goalId, outcome)} onConfirmMilestone={(goalId, milestone) => void confirmMilestone(goalId, milestone)} onCompleteTask={(goalId, taskId) => void completeTaskWithAi(goalId, taskId)} onAskAgent={() => setAgentOpen(true)} />}
         {view === "settings" && <SettingsView providers={providers} provider={selectedProvider} model={selectedModel} settings={userSettings} onSave={async (provider, model, settings) => { setSelectedProvider(provider); setSelectedModel(model); setUserSettings(settings); localStorage.setItem("rr.provider", provider); localStorage.setItem("rr.model", model); if (dataMode === "database") await settingsApi.save({ ...settings, defaultModel: model }); setNotice("偏好设置已保存"); }} />}
       </main>
 
@@ -1684,48 +1683,115 @@ function TaskDetailView({ goal, task, schedule, rhythmSignals, editing, onEditin
   );
 }
 
-function ReviewView({ goals, schedule, reviews, onGenerate, onConfirm, onConfirmOutcome, onConfirmMilestone, onAskAgent }: { goals: Goal[]; schedule: ScheduleItem[]; reviews: ReviewRecord[]; onGenerate: (type: "daily" | "weekly") => void; onConfirm: (review: ReviewRecord) => void; onConfirmOutcome: (goalId: string, outcome: NonNullable<Goal["outcomes"]>[number]) => void; onConfirmMilestone: (goalId: string, milestone: NonNullable<Goal["milestones"]>[number]) => void; onAskAgent: () => void }) {
+type ReviewContentTextKey = Exclude<keyof ReviewContent, "readyForCompletionTasks">;
+
+/** D5 评估正文的可选区块，标题与取值字段一一对应；无值的区块不渲染。 */
+const REVIEW_CONTENT_SECTIONS: Array<{ key: ReviewContentTextKey; title: string }> = [
+  { key: "sessionHighlights", title: "执行亮点" },
+  { key: "rhythmNotes", title: "节奏解读" },
+  { key: "taskProgressNotes", title: "任务进展" },
+  { key: "routineNotes", title: "Routine 坚持" },
+  { key: "goalCheckSuggestions", title: "建议检查" },
+  { key: "nextCycleSuggestions", title: "下一步的轻量建议" },
+];
+
+function ReviewView({ goals, reviews, timezone, onGenerate, onConfirm, onConfirmOutcome, onConfirmMilestone, onCompleteTask, onAskAgent }: { goals: Goal[]; reviews: ReviewRecord[]; timezone: string; onGenerate: (type: "daily" | "weekly") => void; onConfirm: (review: ReviewRecord) => void; onConfirmOutcome: (goalId: string, outcome: NonNullable<Goal["outcomes"]>[number]) => void; onConfirmMilestone: (goalId: string, milestone: NonNullable<Goal["milestones"]>[number]) => void; onCompleteTask: (goalId: string, taskId: string) => void; onAskAgent: () => void }) {
   const [type, setType] = useState<"daily" | "weekly">("weekly");
-  const weekStart = startOfCurrentWeek(); const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
-  const weekItems = schedule.filter((item) => { const date = item.date ? new Date(`${item.date}T12:00:00`) : new Date(); return date >= weekStart && date < weekEnd; });
-  const completed = weekItems.filter((item) => item.status === "completed");
-  const missed = weekItems.filter((item) => item.status === "missed");
-  const investedMinutes = completed.reduce((sum, item) => sum + durationMinutes(item.start, item.end), 0);
-  const smooth = completed.filter((item) => item.feedback === "顺畅" || item.feedback === "smooth").length;
-  const latest = reviews.find((review) => review.type === type);
-  const confirmationItems = goals.flatMap((goal) => [
+  const latest = reviews.find((review) => review.type === type) ?? null;
+  const periodLabel = latest ? describeReviewPeriod(type, latest.periodStart, timezone) : type === "weekly" ? "本周" : "今天";
+  const metrics = latest?.metrics ?? {};
+  const contentSections = latest ? REVIEW_CONTENT_SECTIONS.map((section) => ({ ...section, items: latest.content?.[section.key] ?? [] })).filter((section) => section.items.length > 0) : [];
+  const confirmationItems = type === "weekly" ? goals.flatMap((goal) => [
     ...(goal.milestones ?? []).filter((item) => item.status === "ready_for_review").map((item) => ({ kind: "milestone" as const, goal, item })),
     ...(goal.outcomes ?? []).filter((item) => !item.completedAt).map((item) => ({ kind: "outcome" as const, goal, item })),
-  ]).slice(0, 6);
+  ]).slice(0, 6) : [];
+  const readyTasks = type === "weekly" ? (latest?.content?.readyForCompletionTasks ?? []) : [];
+  const isBusy = latest?.status === "generating";
   return (
-    <div className="review-layout">
+    <div className="review-page">
       <section className="review-hero">
         <div className="review-tabs"><button className={type === "daily" ? "active" : ""} onClick={() => setType("daily")}>日回顾</button><button className={type === "weekly" ? "active" : ""} onClick={() => setType("weekly")}>周回顾</button></div>
-        <span className="section-kicker">{type === "weekly" ? reviewPeriodLabel(weekStart, weekEnd) : todayLabel()}</span>
+        <span className="section-kicker">{periodLabel}</span>
         <p className="review-lead">你不是做得更多了，<br />而是更知道什么时候适合做什么。</p>
-        <div className="review-metrics"><div><strong>{completed.length}</strong><span>完成日程块</span></div><div><strong>{missed.length}</strong><span>未完成/改期</span></div><div><strong>{minutesToCompact(investedMinutes)}</strong><span>真实投入</span></div></div>
-        <button className="review-generate" onClick={() => onGenerate(type)}><RefreshCcw size={15} />生成并保存{type === "weekly" ? "本周" : "今日"}回顾</button>
+        <div className="review-metrics"><div><strong>{metrics.completed ?? 0}/{metrics.total ?? 0}</strong><span>完成日程块</span></div><div><strong>{(metrics.missed ?? 0) + (metrics.rescheduled ?? 0)}</strong><span>未完成/改期</span></div><div><strong>{minutesToCompact(metrics.investedMinutes ?? 0)}</strong><span>真实投入</span></div></div>
       </section>
-      <section className="patterns-card">
-        <div className="section-heading"><div><span className="section-kicker">Rhythm Signals</span><h2>这一周显露的节奏</h2></div></div>
-        <div className="pattern-list">
-          <Pattern icon={<Sparkles />} tone="violet" title="顺畅时刻正在积累" text={smooth ? `本周已有 ${smooth} 次执行被标记为顺畅，可以继续观察它们集中在哪些时间段。` : "完成日程后记录一次节奏反馈，小律才能从真实经历中发现模式。"} />
-          <Pattern icon={<Leaf />} tone="sage" title="Routine 的稳定性" text={`${goals.reduce((sum, goal) => sum + (goal.routines?.length ?? 0), 0)} 个 Routine 正在参与目标推进；比连续天数更重要的是找到可持续的最低版本。`} />
-          <Pattern icon={<CircleDot />} tone="coral" title="计划偏差也是信息" text={missed.length ? `本周有 ${missed.length} 个日程块没有按原计划完成，回顾原因后再决定改期、拆小或放弃。` : "本周暂时没有记录到未完成日程块。"} />
+
+      {!latest && (
+        <section className="saved-review review-empty">
+          <div>
+            <span className="section-kicker">尚无回顾</span>
+            <h2>{type === "weekly" ? "等待周日 23:00 自动生成" : "等待每晚 23:00 自动生成"}</h2>
+            <p>也可以点击下方按钮手动生成一份{type === "weekly" ? "本周" : "今日"}回顾。</p>
+          </div>
+        </section>
+      )}
+
+      {latest && (
+        <section className={clsx("saved-review", latest.status === "failed" && "review-failed")}>
+          <div>
+            <span className="section-kicker">评估状态</span>
+            <h2>{latest.status === "confirmed" ? "这份回顾已经确认" : latest.status === "failed" ? "这份回顾生成失败" : isBusy ? "正在生成回顾" : "这份回顾等待你确认"}</h2>
+            <p>{latest.summary || (latest.status === "failed" ? "数据仍然安全保留，可以重新生成。" : "正在整理真实执行记录…")}</p>
+          </div>
+          {latest.findings?.length > 0 && <ul className="review-findings">{latest.findings.map((finding) => <li key={finding}>{finding}</li>)}</ul>}
+          {latest.suggestions?.length > 0 && <div className="review-content-block"><span className="section-kicker">建议</span><ul>{latest.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul></div>}
+          {contentSections.map((section) => <div className="review-content-block" key={section.key}><span className="section-kicker">{section.title}</span><ul>{section.items.map((item) => <li key={item}>{item}</li>)}</ul></div>)}
+        </section>
+      )}
+
+      {type === "weekly" && (confirmationItems.length > 0 || readyTasks.length > 0) && (
+        <section className="review-confirmations">
+          <div><span className="section-kicker">只由你确认</span><h2>阶段与结果</h2><p>系统只提供执行证据，不替你判断目标或任务是否达成、完成。</p></div>
+          <div>
+            {confirmationItems.map(({ kind, goal, item }) => <article key={item.id}><span>{kind === "milestone" ? "里程碑" : "结果指标"} · {goal.title}</span><strong>{"title" in item ? item.title : item.description}</strong><button onClick={() => kind === "milestone" ? onConfirmMilestone(goal.id, item) : onConfirmOutcome(goal.id, item)}>确认完成</button></article>)}
+            {readyTasks.map((task) => <article key={task.taskId}><span>任务 · {task.goalTitle ?? ""}</span><strong>{task.title}</strong><button onClick={() => onCompleteTask(task.goalId, task.taskId)}>确认完成</button></article>)}
+          </div>
+        </section>
+      )}
+
+      <section className="review-actions">
+        <div className="button-row">
+          {!latest || latest.status === "failed" ? (
+            <button className="primary-button" onClick={() => onGenerate(type)}><RefreshCcw size={15} />{latest ? "重新生成" : "手动生成"}{type === "weekly" ? "本周" : "今日"}回顾</button>
+          ) : (
+            <>
+              {!isBusy && <button className="primary-button" onClick={() => onConfirm(latest)}>{latest.status === "confirmed" ? "撤销确认" : "确认这份回顾"}</button>}
+              <button className="soft-button" onClick={() => onGenerate(type)} disabled={isBusy}><RefreshCcw size={14} />重新生成</button>
+            </>
+          )}
+          <button className="soft-button" onClick={onAskAgent}>请小律解释</button>
         </div>
-      </section>
-      {latest && <section className={clsx("saved-review", latest.status === "failed" && "review-failed")}><div><span className="section-kicker">最近生成</span><h2>{latest.status === "confirmed" ? "这份回顾已经确认" : latest.status === "failed" ? "这份回顾生成失败" : latest.status === "generating" ? "正在生成回顾" : "这份回顾等待你确认"}</h2><p>{latest.summary || (latest.status === "failed" ? "数据仍然安全保留，可以重新生成。" : "正在整理真实执行记录…")}</p></div><ul>{latest.findings?.map((finding) => <li key={finding}>{finding}</li>)}</ul><div className="button-row">{latest.status === "failed" ? <button className="primary-button" onClick={() => onGenerate(type)}>重新生成</button> : latest.status !== "generating" && <button className="primary-button" onClick={() => onConfirm(latest)}>{latest.status === "confirmed" ? "撤销确认" : "确认这份回顾"}</button>}<button className="soft-button" onClick={onAskAgent}>请小律解释</button></div></section>}
-      {confirmationItems.length > 0 && <section className="review-confirmations"><div><span className="section-kicker">只由你确认</span><h2>阶段与结果</h2><p>系统只提供执行证据，不替你判断目标是否达成。</p></div><div>{confirmationItems.map(({ kind, goal, item }) => <article key={item.id}><span>{kind === "milestone" ? "里程碑" : "结果指标"} · {goal.title}</span><strong>{"title" in item ? item.title : item.description}</strong><button onClick={() => kind === "milestone" ? onConfirmMilestone(goal.id, item) : onConfirmOutcome(goal.id, item)}>确认完成</button></article>)}</div></section>}
-      <section className="change-card">
-        <div><span className="section-kicker">下一步</span><h2>让建议来自你的真实执行</h2><p>小律会读取本周日程、执行状态和节奏反馈，先生成调整草案；只有你确认后才会修改计划。</p></div>
-        <div className="button-row"><button className="primary-button" onClick={onAskAgent}><Sparkles size={16} />生成调整建议</button></div>
       </section>
     </div>
   );
 }
 
-function Pattern({ icon, tone, title, text }: { icon: React.ReactNode; tone: string; title: string; text: string }) {
-  return <article className="pattern"><div className={`pattern-icon ${tone}`}>{icon}</div><div><h3>{title}</h3><p>{text}</p></div></article>;
+/**
+ * 根据回顾周期起始时间与用户时区，生成「今日/昨日」「本周/上周」等相对语义标题。
+ * 与实际日期不连续时（例如跳过了一天未生成），回退为显式日期标签。
+ * @param type - 回顾类型
+ * @param periodStartIso - 回顾周期起始时间（ISO，UTC）
+ * @param timezone - 用户时区
+ */
+function describeReviewPeriod(type: "daily" | "weekly", periodStartIso: string, timezone: string) {
+  const periodStart = new Date(periodStartIso);
+  const now = new Date();
+  const dayMs = 86400000;
+  const dateKey = (date: Date) => new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: timezone }).format(date);
+  if (type === "daily") {
+    const dateLabel = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", timeZone: timezone }).format(periodStart);
+    const startKey = dateKey(periodStart);
+    if (startKey === dateKey(now)) return `今日回顾 · ${dateLabel}`;
+    if (startKey === dateKey(new Date(now.getTime() - dayMs))) return `昨日回顾 · ${dateLabel}`;
+    return `${dateLabel} 回顾`;
+  }
+  const rangeLabel = reviewPeriodLabel(periodStart, new Date(periodStart.getTime() + 7 * dayMs));
+  const thisWeekStart = startOfCurrentWeek();
+  const lastWeekStart = new Date(thisWeekStart); lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+  const startKey = dateKey(periodStart);
+  if (startKey === dateKey(thisWeekStart)) return `本周回顾 · ${rangeLabel}`;
+  if (startKey === dateKey(lastWeekStart)) return `上周回顾 · ${rangeLabel}`;
+  return `${rangeLabel} 回顾`;
 }
 
 function SettingsView({ providers, provider, model, settings, onSave }: { providers: ModelProviderInfo[]; provider: string; model: string; settings: UserSettings; onSave: (provider: string, model: string, settings: UserSettings) => Promise<void> }) {

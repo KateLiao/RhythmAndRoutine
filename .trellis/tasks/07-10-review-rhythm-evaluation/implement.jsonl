@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/guides/llm-structured-output.md", "reason": "Review generateObject must follow Qwen/thinking and schema contracts"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review spans schema, service, API, cron, and ReviewView"}
+{"file": "docs/v0.3.0 版本需求/新增特性-回顾节奏评估.md", "reason": "Authoritative v0.3 product requirement for daily/weekly rhythm review"}
+{"file": ".trellis/tasks/07-10-review-rhythm-evaluation/design.md", "reason": "Technical design for D2 aggregation, facts, schema, UI"}
+{"file": ".trellis/tasks/07-10-review-rhythm-evaluation/prd.md", "reason": "Accepted decisions D1–D9 and acceptance criteria"}

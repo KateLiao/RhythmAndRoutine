@@ -311,14 +311,27 @@ export async function rescheduleScheduleBlockTx(
   return tx.scheduleBlock.findFirstOrThrow({ where: { id: created.id }, include });
 }
 
+/** Task 完成只能由用户通过 completeTaskWithSummary 确认，聚合逻辑不得写入这些终态。 */
+const TASK_TERMINAL_STATUSES: TaskStatus[] = [TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.ARCHIVED];
+
 /**
  * 根据 Task 关联的所有有效日程块状态，聚合计算 Task 状态。
- * 规则：存在 COMPLETED 块 → COMPLETED；存在 PLANNED/IN_PROGRESS 块 → SCHEDULED；
- * 否则全为 MISSED/RESCHEDULED → BLOCKED；无任何块 → READY（回退）。
+ *
+ * 规则（v0.3 起）：日程块完成只代表一次投入会话完成，不代表任务交付完成——
+ * Task 是否 COMPLETED 只能由用户在完成标准区主动确认（见 `task-completion.ts`）。
+ * 本函数因此**禁止**把 Task 状态聚合为 COMPLETED，也不会把已处于终态
+ * （COMPLETED / CANCELLED / ARCHIVED）的 Task 因块状态变化而打回其它状态。
+ *
+ * 非终态聚合规则：存在 PLANNED/IN_PROGRESS 块 → SCHEDULED（含 IN_PROGRESS 块时为 IN_PROGRESS）；
+ * 存在已完成投入的块但用户尚未确认 → 保持 SCHEDULED（可作为「建议确认」的信号来源）；
+ * 全部为 MISSED/RESCHEDULED/CANCELLED → BLOCKED；无任何有效块 → READY。
  * @param tx - Prisma 事务客户端
  * @param taskId - 任务 ID
  */
 export async function aggregateTaskStatus(tx: Prisma.TransactionClient, taskId: string) {
+  const task = await tx.task.findUnique({ where: { id: taskId }, select: { status: true } });
+  if (!task || TASK_TERMINAL_STATUSES.includes(task.status)) return;
+
   const blocks = await tx.scheduleBlock.findMany({
     where: {
       deletedAt: null,
@@ -332,16 +345,39 @@ export async function aggregateTaskStatus(tx: Prisma.TransactionClient, taskId: 
     return;
   }
   let next: TaskStatus;
-  if (statuses.includes(ScheduleBlockStatus.COMPLETED)) {
-    next = TaskStatus.COMPLETED;
-  } else if (statuses.some((s) => s === ScheduleBlockStatus.PLANNED || s === ScheduleBlockStatus.IN_PROGRESS)) {
+  if (statuses.includes(ScheduleBlockStatus.IN_PROGRESS)) {
+    next = TaskStatus.IN_PROGRESS;
+  } else if (statuses.some((s) => s === ScheduleBlockStatus.PLANNED)) {
     next = TaskStatus.SCHEDULED;
-  } else if (statuses.every((s) => s === ScheduleBlockStatus.MISSED || s === ScheduleBlockStatus.RESCHEDULED)) {
+  } else if (statuses.includes(ScheduleBlockStatus.COMPLETED)) {
+    // 有已完成的投入会话，但用户尚未在完成标准区确认交付；不自动完成任务。
+    next = TaskStatus.SCHEDULED;
+  } else if (statuses.every((s) => s === ScheduleBlockStatus.MISSED || s === ScheduleBlockStatus.RESCHEDULED || s === ScheduleBlockStatus.CANCELLED)) {
     next = TaskStatus.BLOCKED;
   } else {
     next = TaskStatus.READY;
   }
-  await tx.task.update({ where: { id: taskId }, data: { status: next, completedAt: next === TaskStatus.COMPLETED ? new Date() : null, version: { increment: 1 } } });
+  await tx.task.update({ where: { id: taskId }, data: { status: next, version: { increment: 1 } } });
+}
+
+/**
+ * 判断一个任务当前是否已具备「建议用户确认完成」的证据：
+ * 累计真实投入达到预计时长，或已无剩余计划中的日程块但存在已完成投入。
+ * 该函数只产出建议信号，绝不修改任务状态；最终完成仍须用户调用 completeTaskWithSummary。
+ * @param task - 任务的预计时长与当前状态
+ * @param blocks - 任务关联的日程块（仅需 status 与 investedMinutes 相关字段）
+ */
+export function isReadyForCompletionSuggest(
+  task: { status: TaskStatus; estimatedMinutes: number | null },
+  blocks: Array<{ status: ScheduleBlockStatus; investedMinutes: number }>,
+): boolean {
+  if (TASK_TERMINAL_STATUSES.includes(task.status)) return false;
+  const completedBlocks = blocks.filter((block) => block.status === ScheduleBlockStatus.COMPLETED);
+  if (!completedBlocks.length) return false;
+  const investedMinutes = completedBlocks.reduce((sum, block) => sum + block.investedMinutes, 0);
+  const hasNoRemainingPlanned = !blocks.some((block) => block.status === ScheduleBlockStatus.PLANNED || block.status === ScheduleBlockStatus.IN_PROGRESS);
+  if (task.estimatedMinutes && investedMinutes >= task.estimatedMinutes) return true;
+  return hasNoRemainingPlanned;
 }
 
 async function getBlock(userId: string, id: string) {

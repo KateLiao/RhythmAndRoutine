@@ -169,7 +169,17 @@ export type AgentRunHistory = {
     toolCalls: Array<{ toolName: string; status: string; errorCode?: string | null }>;
   }>;
 };
-export type ReviewRecord = { id: string; type: "daily" | "weekly"; status: string; periodStart: string; periodEnd: string; summary: string; metrics: Record<string, number>; findings: string[]; suggestions: string[]; confirmedAt?: string | null };
+export type ReviewReadyForCompletionTask = { taskId: string; title: string; goalId: string; goalTitle: string | null };
+export type ReviewContent = {
+  sessionHighlights: string[];
+  rhythmNotes: string[];
+  taskProgressNotes: string[];
+  routineNotes: string[];
+  goalCheckSuggestions: string[];
+  nextCycleSuggestions: string[];
+  readyForCompletionTasks: ReviewReadyForCompletionTask[];
+};
+export type ReviewRecord = { id: string; type: "daily" | "weekly"; status: string; periodStart: string; periodEnd: string; summary: string; metrics: Record<string, number>; findings: string[]; suggestions: string[]; content?: ReviewContent | null; confirmedAt?: string | null };
 
 export async function loadModelProviders() {
   const response = await fetch("/api/models");

@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/guides/llm-structured-output.md", "reason": "Verify generateObject path for review capability"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check Task status and Review content flow across layers"}
+{"file": "docs/v0.3.0 版本需求/新增特性-回顾节奏评估.md", "reason": "Acceptance criteria and non-goals for quality gate"}
+{"file": ".trellis/tasks/07-10-review-rhythm-evaluation/prd.md", "reason": "Acceptance checklist against D1–D9"}
+{"file": "docs/development-spec.md", "reason": "Confirm Task completion and Review timing specs stay consistent after change"}

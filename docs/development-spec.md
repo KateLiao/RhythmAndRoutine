@@ -108,8 +108,9 @@ draft | awaiting_confirmation | approved | rejected | applied | failed
 
 规则：
 
-- Task 和 ScheduleBlock 可以由执行行为更新状态。
-- Task 由用户在完成标准区主动「确认完成」；服务端汇总关联 ScheduleBlock 的真实投入与 ExecutionRecord，调用 `review` capability 生成两段式总结（`executionSummary` + `overallEvaluation`），写入 `Task.completionRecord`（JSON），并将 `status` 置为 `completed`。AI 不可用时使用规则模板兜底。
+- Task 和 ScheduleBlock 可以由执行行为更新状态，但两者的“完成”含义不同：ScheduleBlock 完成只代表一次投入会话已结束，Task 完成必须由用户在完成标准区主动确认。
+- `aggregateTaskStatus`（`src/server/services/schedule.ts`）据关联 ScheduleBlock 状态聚合 Task 的非终态（`ready` / `scheduled` / `in_progress` / `blocked`），**禁止**写入 `completed`；已是 `completed` / `cancelled` / `archived` 的 Task 不会被块状态变化打回。`estimatedMinutes` 只作为「建议确认完成」信号（`isReadyForCompletionSuggest`：累计真实投入达到预计时长，或已无剩余计划块且存在完成投入）的参考阈值，不触发自动完成。
+- Task 由用户在完成标准区主动「确认完成」；服务端汇总关联 ScheduleBlock 的真实投入与 ExecutionRecord，调用 `review` capability 生成两段式总结（`executionSummary` + `overallEvaluation`），写入 `Task.completionRecord`（JSON），并将 `status` 置为 `completed`。AI 不可用时使用规则模板兜底。这是 Task 状态变为 `completed` 的唯一入口。
 - Outcome 和 Milestone 只能由用户确认完成。
 - 删除优先采用软删除或归档；有关联执行历史的对象不可物理级联删除。
 - ScheduleBlock 改期时保留原计划与变更原因，避免丢失节奏分析依据。
@@ -133,7 +134,8 @@ draft | awaiting_confirmation | approved | rejected | applied | failed
 - Zod 作为表单、API、工具参数和 AI 结构化输出的共同校验层。
 - Tailwind CSS 与 design tokens 实现 Soft Humanist 视觉系统。
 - Vercel 作为首选部署平台。
-- 定时任务触发日回顾和周回顾；执行逻辑必须幂等，手动触发与定时触发共用同一服务。
+- 定时任务触发日回顾和周回顾；执行逻辑必须幂等（幂等键 `${userId}:${type}:${periodStart}:${periodEnd}`），手动触发与定时触发共用同一服务（`generateReview`）。默认日回顾时间与周回顾时间均为用户时区 `23:00`（周回顾默认周日），用户可在设置中调整。回顾页在新周期生成前展示上一份回顾（「昨日回顾」/「上周回顾」语义）。
+- 日回顾聚焦当日执行与感受的「收尾评估」，周回顾聚焦节奏与目标校准；两者共用同一份增强输出 schema（`summary`/`findings`/`suggestions`/`source` 必填，`sessionHighlights`/`rhythmNotes`/`taskProgressNotes`/`routineNotes`/`goalCheckSuggestions`/`nextCycleSuggestions` 为可选区块），日回顾通常只填前者，周回顾按需填充后者。周回顾的 LLM 输入在服务端做确定性压缩（数字先算好、日回顾 findings 作先验、用户 note 与异常优先摘录、普通完成块只进聚合计数），不会把整周逐条日程原文传给模型。回顾正文中的「建议检查/建议确认」措辞不代表 Task、Milestone 或 Outcome 已完成，最终确认动作仍分别走 Task 完成、Milestone/Outcome 确认的既有接口。
 - 默认时区为 `Asia/Shanghai`，时间存储使用 UTC，展示与调度使用用户时区。
 
 ### 5.2 账号边界

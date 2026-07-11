@@ -80,16 +80,31 @@ export const changeSetDraftSchema = z.object({
 
 /**
  * AI 生成的回顾结果 schema，用于 review capability 结构化输出校验。
+ * 日/周回顾共用同一套增强结构：必有字段两者都填；可选区块日回顾通常留空，
+ * 周回顾按需填充（详见 design.md D5）。系统不得在任何字段中宣布
+ * Task / Milestone / Outcome 已完成，只能给出「建议检查/建议确认」的文案。
  * @field summary - 本周期总结（1-3 句）
  * @field findings - 从数据中提取的事实性发现列表
  * @field suggestions - 下一周期的可操作建议列表
  * @field source - 标记内容来源（ai 或 rules）
+ * @field sessionHighlights - 本周期内值得记录的执行亮点/阻力（日回顾主用，周回顾可选）
+ * @field rhythmNotes - 对照真实 Rhythm Signal 的节奏解读（周回顾主用）
+ * @field taskProgressNotes - 任务进展观察，仅描述证据，不宣布完成（周回顾主用）
+ * @field routineNotes - Routine 坚持情况观察（周回顾主用）
+ * @field goalCheckSuggestions - 建议用户检查的目标/阶段节点，措辞为「建议」而非「已完成」
+ * @field nextCycleSuggestions - 下一周期的轻量调整建议（日=今晚/明天；周=下周，均非 ChangeSet）
  */
 export const reviewResultSchema = z.object({
   summary: z.string().min(1).max(600),
   findings: z.array(z.string().min(1).max(300)).min(1).max(8),
   suggestions: z.array(z.string().min(1).max(300)).min(1).max(6),
   source: z.enum(["ai", "rules"]).default("ai"),
+  sessionHighlights: z.array(z.string().min(1).max(300)).max(6).default([]),
+  rhythmNotes: z.array(z.string().min(1).max(300)).max(6).default([]),
+  taskProgressNotes: z.array(z.string().min(1).max(300)).max(6).default([]),
+  routineNotes: z.array(z.string().min(1).max(300)).max(6).default([]),
+  goalCheckSuggestions: z.array(z.string().min(1).max(300)).max(6).default([]),
+  nextCycleSuggestions: z.array(z.string().min(1).max(300)).max(6).default([]),
 });
 
 /**
