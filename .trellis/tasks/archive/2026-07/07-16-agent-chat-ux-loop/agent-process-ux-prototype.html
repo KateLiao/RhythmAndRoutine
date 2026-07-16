@@ -1,0 +1,878 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>小律 · Agent 处理过程 UX 原型</title>
+  <style>
+    :root {
+      --canvas: #eeeae6;
+      --paper: #fffdfb;
+      --surface: #faf7fb;
+      --surface-strong: #f5f0f8;
+      --ink: #302b34;
+      --muted: #746c78;
+      --quiet: #9c939f;
+      --line: #e9e2eb;
+      --violet: #705a9f;
+      --violet-deep: #564276;
+      --violet-soft: #f0eafb;
+      --sage: #6e9278;
+      --sage-soft: #edf5ef;
+      --gold: #a87d32;
+      --gold-soft: #fbf3df;
+      --coral: #b85f58;
+      --coral-soft: #faecea;
+      --shadow: 0 24px 80px rgba(52, 40, 60, .18);
+      --radius-panel: 24px;
+      --ease: cubic-bezier(.22, .9, .28, 1);
+    }
+
+    * { box-sizing: border-box; }
+    html { color-scheme: light; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100dvh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 8%, rgba(112, 90, 159, .08), transparent 28%),
+        linear-gradient(135deg, #f4f0ed 0%, var(--canvas) 100%);
+      font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input, textarea { font: inherit; }
+    button { touch-action: manipulation; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible {
+      outline: 3px solid rgba(112, 90, 159, .25);
+      outline-offset: 2px;
+    }
+
+    .prototype-shell {
+      min-height: 100dvh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .prototype-bar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      min-height: 64px;
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      color: #463e4a;
+      background: rgba(255, 253, 251, .88);
+      border-bottom: 1px solid rgba(69, 55, 77, .1);
+      backdrop-filter: blur(16px);
+    }
+    .prototype-brand { display: flex; align-items: center; gap: 10px; min-width: 180px; }
+    .prototype-mark {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 11px;
+      color: var(--violet);
+      background: var(--violet-soft);
+    }
+    .prototype-brand strong { display: block; font-size: 13px; letter-spacing: .01em; }
+    .prototype-brand span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .state-switcher {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,.75);
+    }
+    .state-switcher button, .annotation-toggle {
+      min-height: 38px;
+      border: 0;
+      border-radius: 10px;
+      padding: 0 13px;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 650;
+      transition: color .18s ease, background .18s ease, box-shadow .18s ease;
+    }
+    .state-switcher button:hover, .annotation-toggle:hover { color: var(--ink); background: var(--surface); }
+    .state-switcher button.active {
+      color: var(--violet-deep);
+      background: #fff;
+      box-shadow: 0 3px 12px rgba(62, 47, 72, .1);
+    }
+    .annotation-toggle {
+      min-width: 96px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.7);
+    }
+    .annotation-toggle.active { color: var(--violet); border-color: rgba(112,90,159,.3); background: var(--violet-soft); }
+
+    .workspace {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(rgba(255,255,255,.55), rgba(255,255,255,.55)),
+        repeating-linear-gradient(0deg, transparent 0 47px, rgba(92,78,100,.055) 48px),
+        repeating-linear-gradient(90deg, transparent 0 119px, rgba(92,78,100,.045) 120px);
+    }
+    .workspace-ghost {
+      position: absolute;
+      inset: 34px min(950px, 66vw) 34px 34px;
+      color: rgba(58, 49, 63, .28);
+      pointer-events: none;
+    }
+    .workspace-ghost h1 { margin: 0 0 20px; font-size: clamp(26px, 4vw, 56px); font-weight: 640; letter-spacing: -.04em; }
+    .ghost-chip { display: inline-block; margin: 0 8px 12px 0; padding: 8px 13px; border: 1px solid rgba(80,66,88,.12); border-radius: 99px; font-size: 12px; }
+
+    .agent-panel {
+      position: absolute;
+      z-index: 10;
+      top: 16px;
+      right: 16px;
+      bottom: 16px;
+      width: min(880px, calc(100vw - 32px));
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      overflow: hidden;
+      border: 1px solid rgba(71, 55, 85, .11);
+      border-radius: var(--radius-panel);
+      background: rgba(255, 253, 251, .985);
+      box-shadow: var(--shadow);
+    }
+    .agent-header {
+      min-height: 70px;
+      padding: 12px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+    }
+    .agent-identity { display: flex; align-items: center; gap: 10px; }
+    .avatar {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      color: var(--violet);
+      background: var(--violet-soft);
+    }
+    .agent-identity strong { display: block; font-size: 14px; }
+    .agent-identity small { display: flex; align-items: center; gap: 5px; margin-top: 3px; color: var(--quiet); font-size: 10px; }
+    .online-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--sage); }
+    .header-actions { display: flex; align-items: center; gap: 4px; }
+    .soft-button, .icon-button {
+      min-height: 44px;
+      border: 1px solid var(--line);
+      color: var(--ink);
+      background: #fff;
+      cursor: pointer;
+      font-weight: 650;
+      transition: transform .15s ease, background .15s ease;
+    }
+    .soft-button:hover, .icon-button:hover { background: var(--surface); }
+    .soft-button:active, .icon-button:active { transform: scale(.97); }
+    .soft-button { padding: 0 15px; border-radius: 13px; font-size: 11px; }
+    .icon-button { width: 44px; border-color: transparent; border-radius: 13px; display: grid; place-items: center; }
+    svg { display: block; }
+
+    .context-bar {
+      min-height: 45px;
+      padding: 8px 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid rgba(233,226,235,.8);
+      background: rgba(249,247,250,.72);
+    }
+    .context-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 99px; color: var(--muted); background: #f2eef5; font-size: 10px; }
+
+    .messages {
+      min-height: 0;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+      padding: 22px 24px 28px;
+      scrollbar-gutter: stable;
+    }
+    .conversation-column { width: min(680px, 100%); display: flex; flex-direction: column; gap: 14px; }
+    .message { border-radius: 17px; font-size: 13px; line-height: 1.65; }
+    .message.user { align-self: flex-end; max-width: 75%; padding: 11px 15px; color: #fff; background: var(--violet); border-bottom-right-radius: 5px; }
+    .message.assistant { padding: 12px 14px; background: var(--surface); border-bottom-left-radius: 5px; }
+    .message.assistant p { margin: 0 0 9px; }
+    .message.assistant p:last-child { margin-bottom: 0; }
+    .schedule-lines { margin: 10px 0; padding-left: 16px; border-left: 2px solid rgba(112,90,159,.18); }
+    .schedule-lines strong { display: inline-block; min-width: 82px; font-variant-numeric: tabular-nums; }
+
+    .process {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(112, 90, 159, .17);
+      border-radius: 18px;
+      background: #fff;
+      box-shadow: 0 8px 24px rgba(57, 43, 68, .045);
+      transition: border-color .2s ease, box-shadow .2s ease;
+    }
+    .process[data-state="running"] { box-shadow: 0 10px 30px rgba(75, 55, 102, .07); }
+    .process-header {
+      width: 100%;
+      min-height: 54px;
+      padding: 9px 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      border: 0;
+      color: inherit;
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+    }
+    .process-title { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .process-symbol {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border-radius: 10px;
+      color: var(--violet);
+      background: var(--violet-soft);
+    }
+    .process-copy { min-width: 0; }
+    .process-copy strong { display: block; font-size: 12px; line-height: 1.35; }
+    .process-copy span { display: block; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+    .process-status { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--violet); }
+    .process[data-state="running"] .status-dot { animation: breathe 1.4s infinite; }
+    .process[data-state="complete"] .status-dot { background: var(--sage); }
+    .process[data-state="confirm"] .status-dot { background: var(--gold); }
+    .process[data-state="failed"] .status-dot { background: var(--coral); }
+    .chevron { transition: transform .22s var(--ease); }
+    .process.open .process-header .chevron { transform: rotate(180deg); }
+
+    .process-body { display: none; padding: 2px 14px 14px; }
+    .process.open .process-body { display: block; }
+    .rhythm-track { position: relative; margin: 0; padding: 0; list-style: none; }
+    .rhythm-track::before {
+      content: "";
+      position: absolute;
+      z-index: 0;
+      top: 22px;
+      bottom: 22px;
+      left: 15px;
+      width: 2px;
+      border-radius: 99px;
+      background: linear-gradient(var(--sage) 0 56%, rgba(112,90,159,.24) 56% 100%);
+      opacity: .48;
+    }
+    .stage { position: relative; z-index: 1; padding: 0; }
+    .stage + .stage { margin-top: 2px; }
+    .stage-button {
+      width: 100%;
+      min-height: 52px;
+      padding: 7px 6px 7px 0;
+      display: grid;
+      grid-template-columns: 31px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      border: 0;
+      border-radius: 12px;
+      color: inherit;
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+      transition: background .18s ease;
+    }
+    .stage-button:hover { background: rgba(112,90,159,.045); }
+    .beat {
+      width: 22px;
+      height: 22px;
+      margin-left: 5px;
+      display: grid;
+      place-items: center;
+      border: 3px solid #fff;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--sage);
+      box-shadow: 0 0 0 1px rgba(110,146,120,.25);
+    }
+    .stage.current .beat { background: var(--violet); box-shadow: 0 0 0 1px rgba(112,90,159,.25), 0 0 0 5px rgba(112,90,159,.08); animation: breathe-ring 1.5s infinite; }
+    .stage.confirm .beat { background: var(--gold); box-shadow: 0 0 0 1px rgba(168,125,50,.25), 0 0 0 5px rgba(168,125,50,.08); }
+    .stage.failed .beat { background: var(--coral); box-shadow: 0 0 0 1px rgba(184,95,88,.25), 0 0 0 5px rgba(184,95,88,.08); }
+    .stage-name { min-width: 0; }
+    .stage-name strong { display: block; font-size: 12px; font-weight: 680; }
+    .stage-name span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .stage-trailing { display: flex; align-items: center; gap: 7px; color: var(--quiet); font-size: 10px; }
+    .stage.current .stage-trailing { color: var(--violet); }
+    .stage.confirm .stage-trailing { color: var(--gold); }
+    .stage.failed .stage-trailing { color: var(--coral); }
+
+    .tool-list { display: none; margin: 0 0 5px 40px; border-left: 1px solid var(--line); }
+    .stage.expanded .tool-list { display: block; }
+    .tool {
+      position: relative;
+      border-bottom: 1px solid rgba(233,226,235,.72);
+    }
+    .tool:last-child { border-bottom: 0; }
+    .tool::before { content: ""; position: absolute; top: 21px; left: -1px; width: 10px; height: 1px; background: var(--line); }
+    .tool-button {
+      width: 100%;
+      min-height: 44px;
+      padding: 7px 7px 7px 15px;
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      border: 0;
+      color: inherit;
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+    }
+    .tool-icon { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 7px; color: var(--sage); background: var(--sage-soft); }
+    .tool.failed .tool-icon { color: var(--coral); background: var(--coral-soft); }
+    .tool-copy { min-width: 0; }
+    .tool-copy strong { display: block; font-size: 11px; font-weight: 640; }
+    .tool-copy span { display: block; margin-top: 1px; overflow: hidden; color: var(--muted); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+    .tool-time { color: var(--quiet); font-size: 9px; font-variant-numeric: tabular-nums; }
+    .tool-detail { display: none; margin: 0 7px 9px 43px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); font-size: 10px; line-height: 1.55; }
+    .tool.expanded .tool-detail { display: block; }
+    .detail-grid { display: grid; grid-template-columns: 76px 1fr; gap: 7px 10px; }
+    .detail-grid dt { color: var(--quiet); }
+    .detail-grid dd { margin: 0; color: var(--muted); }
+    .raw-toggle { min-height: 32px; margin-top: 8px; padding: 0; border: 0; color: var(--violet); background: transparent; cursor: pointer; font-size: 10px; font-weight: 680; }
+    .raw-json { display: none; max-height: 150px; margin: 2px 0 0; padding: 9px; overflow: auto; border-radius: 8px; color: #5f5663; background: #f0edf1; font: 9px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+    .raw-json.open { display: block; }
+    .internal-loop { display: flex; align-items: center; gap: 7px; margin: 5px 5px 0 40px; color: var(--quiet); font-size: 9px; }
+    .internal-loop::before { content: ""; width: 18px; height: 1px; background: var(--line); }
+
+    .changeset {
+      padding: 14px;
+      border: 1px solid rgba(112,90,159,.24);
+      border-radius: 18px;
+      background: linear-gradient(135deg, #fdfbff, #f8f3fc);
+    }
+    .changeset[hidden] { display: none; }
+    .changeset-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+    .eyebrow { color: var(--violet); font-size: 9px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .changeset h3 { margin: 4px 0 3px; font-size: 14px; }
+    .changeset-reason { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .risk { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 5px 8px; border-radius: 99px; color: var(--gold); background: var(--gold-soft); font-size: 9px; font-weight: 700; }
+    .operation-list { display: grid; gap: 7px; margin: 12px 0; }
+    .operation {
+      min-height: 48px;
+      padding: 8px 10px;
+      display: grid;
+      grid-template-columns: 20px minmax(0,1fr) auto;
+      align-items: center;
+      gap: 9px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255,255,255,.85);
+      cursor: pointer;
+    }
+    .operation input { width: 17px; height: 17px; margin: 0; accent-color: var(--violet); }
+    .operation strong { display: block; font-size: 11px; }
+    .operation span { display: block; margin-top: 2px; color: var(--muted); font-size: 9.5px; }
+    .operation time { color: var(--quiet); font-size: 10px; font-variant-numeric: tabular-nums; }
+    .changeset-actions { display: flex; align-items: center; gap: 8px; }
+    .primary-action, .secondary-action {
+      min-height: 44px;
+      padding: 0 15px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .primary-action { border: 1px solid var(--violet); color: #fff; background: var(--violet); }
+    .primary-action:hover { background: var(--violet-deep); }
+    .primary-action:disabled { opacity: .45; cursor: not-allowed; }
+    .secondary-action { border: 1px solid var(--line); color: var(--muted); background: #fff; }
+    .terminal-row {
+      display: none;
+      min-height: 54px;
+      padding: 8px 12px;
+      grid-template-columns: 28px minmax(0,1fr) auto;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid rgba(110,146,120,.25);
+      border-radius: 16px;
+      background: var(--sage-soft);
+    }
+    .terminal-row.visible { display: grid; }
+    .terminal-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 10px; color: var(--sage); background: #fff; }
+    .terminal-row strong { display: block; font-size: 11px; }
+    .terminal-row span { display: block; margin-top: 2px; color: var(--muted); font-size: 9.5px; }
+    .terminal-row button { min-height: 38px; border: 0; color: var(--violet); background: transparent; cursor: pointer; font-size: 10px; font-weight: 700; }
+
+    .composer-wrap { position: relative; padding: 8px 16px 14px; background: linear-gradient(transparent, var(--paper) 20%); }
+    .sticky-activity {
+      display: none;
+      min-height: 40px;
+      margin-bottom: 7px;
+      padding: 6px 10px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid rgba(112,90,159,.13);
+      border-radius: 12px;
+      color: var(--muted);
+      background: rgba(248,244,251,.96);
+      cursor: pointer;
+      font-size: 10px;
+    }
+    .sticky-activity.visible { display: flex; }
+    .sticky-activity span { display: flex; align-items: center; gap: 7px; }
+    .sticky-activity i { width: 7px; height: 7px; border-radius: 50%; background: var(--violet); animation: breathe 1.4s infinite; }
+    .composer {
+      min-height: 50px;
+      padding: 5px 5px 5px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid rgba(112,90,159,.26);
+      border-radius: 17px;
+      background: #fff;
+      box-shadow: 0 4px 18px rgba(54,42,60,.05);
+    }
+    .composer input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 12px; }
+    .composer input::placeholder { color: var(--quiet); }
+    .send-button {
+      width: 40px;
+      height: 40px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 13px;
+      color: #fff;
+      background: var(--violet);
+      cursor: pointer;
+    }
+    .send-button.stop { background: var(--coral); }
+    .composer-help { margin: 5px 4px 0; color: var(--quiet); font-size: 9px; text-align: center; }
+
+    .dev-tag { display: none; position: absolute; z-index: 5; padding: 3px 5px; border-radius: 5px; color: #fff; background: #2f2933; font: 8px/1.2 ui-monospace, monospace; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.2); }
+    body.annotated .dev-tag { display: block; }
+    .process > .dev-tag { top: 4px; right: 6px; }
+    .stage > .dev-tag { top: 2px; right: 34px; }
+    .tool > .dev-tag { top: 3px; right: 60px; }
+    .changeset > .dev-tag { top: 5px; right: 8px; }
+    .changeset { position: relative; }
+
+    .toast {
+      position: fixed;
+      z-index: 100;
+      left: 50%;
+      bottom: 28px;
+      padding: 10px 14px;
+      border-radius: 11px;
+      color: #fff;
+      background: rgba(47,41,51,.94);
+      box-shadow: 0 10px 30px rgba(0,0,0,.18);
+      font-size: 11px;
+      opacity: 0;
+      transform: translate(-50%, 10px);
+      pointer-events: none;
+      transition: opacity .2s ease, transform .2s var(--ease);
+    }
+    .toast.visible { opacity: 1; transform: translate(-50%, 0); }
+
+    @keyframes breathe { 0%,100% { opacity: .5; transform: scale(.88); } 50% { opacity: 1; transform: scale(1); } }
+    @keyframes breathe-ring { 0%,100% { box-shadow: 0 0 0 1px rgba(112,90,159,.25), 0 0 0 4px rgba(112,90,159,.06); } 50% { box-shadow: 0 0 0 1px rgba(112,90,159,.25), 0 0 0 7px rgba(112,90,159,.12); } }
+
+    @media (max-width: 760px) {
+      .prototype-bar { padding: 8px; gap: 8px; overflow-x: auto; }
+      .prototype-brand { display: none; }
+      .state-switcher { flex: 0 0 auto; }
+      .state-switcher button { padding: 0 10px; }
+      .annotation-toggle { flex: 0 0 auto; min-width: 88px; }
+      .workspace { min-height: calc(100dvh - 64px); }
+      .workspace-ghost { display: none; }
+      .agent-panel { inset: 0; width: 100%; border: 0; border-radius: 0; }
+      .agent-header { padding: 10px 12px; }
+      .header-actions .icon-button:nth-last-child(2) { display: none; }
+      .messages { padding: 16px 12px 22px; }
+      .message.user { max-width: 88%; }
+      .process-copy span { max-width: 210px; }
+      .tool-list { margin-left: 31px; }
+      .tool-detail { margin-left: 34px; }
+      .detail-grid { grid-template-columns: 66px 1fr; }
+      .changeset-actions { flex-direction: column; align-items: stretch; }
+      .primary-action, .secondary-action { width: 100%; }
+      .operation { grid-template-columns: 20px minmax(0,1fr); }
+      .operation time { grid-column: 2; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="prototype-shell">
+    <header class="prototype-bar">
+      <div class="prototype-brand">
+        <div class="prototype-mark" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3v18M5 8.5c4.7 0 7 2.2 7 6.5M19 8.5c-4.7 0-7 2.2-7 6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </div>
+        <div><strong>Agent 处理过程原型</strong><span>点击切换真实交互状态</span></div>
+      </div>
+      <nav class="state-switcher" aria-label="原型状态">
+        <button type="button" class="active" data-demo-state="running">执行中</button>
+        <button type="button" data-demo-state="complete">回答完成</button>
+        <button type="button" data-demo-state="confirm">等待确认</button>
+        <button type="button" data-demo-state="failed">失败恢复</button>
+      </nav>
+      <button type="button" class="annotation-toggle" aria-pressed="false">研发标注</button>
+    </header>
+
+    <section class="workspace">
+      <div class="workspace-ghost" aria-hidden="true">
+        <div class="ghost-chip">今天</div><div class="ghost-chip">目标进展</div>
+        <h1>下午任务已完成，<br />给晚间留一点呼吸。</h1>
+      </div>
+
+      <aside class="agent-panel" aria-label="小律对话窗口">
+        <header class="agent-header">
+          <div class="agent-identity">
+            <div class="avatar" aria-hidden="true">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 2.8l1.5 5.1L18.7 10l-5.2 2.1L12 17.2l-1.5-5.1L5.3 10l5.2-2.1L12 2.8Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m19 16 .7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16Z" fill="currentColor"/></svg>
+            </div>
+            <div><strong>小律</strong><small><i class="online-dot"></i>qwen · qwen3.5-plus</small></div>
+          </div>
+          <div class="header-actions">
+            <button type="button" class="soft-button">新对话</button>
+            <button type="button" class="icon-button" aria-label="更多操作">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+            </button>
+            <button type="button" class="icon-button" aria-label="还原窗口">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 4H4v5M15 20h5v-5M4 4l6 6m10 10-6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" class="icon-button" aria-label="关闭小律">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="context-bar">
+          <span class="context-chip">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 3v4M16 3v4M3 10h18" stroke="currentColor" stroke-width="1.8"/></svg>今天
+          </span>
+          <span class="context-chip">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/></svg>7 个目标
+          </span>
+        </div>
+
+        <div class="messages" id="messages">
+          <div class="conversation-column">
+            <div class="message assistant">我已经看过当前页面的目标和日程。想一起梳理什么？</div>
+            <div class="message user">帮我在今晚安排一次英语学习，还有一次吉他练习（温柔）</div>
+
+            <section class="process open" data-state="running" aria-label="处理过程">
+              <span class="dev-tag">processSteps[] · 展示投影</span>
+              <button type="button" class="process-header" aria-expanded="true">
+                <span class="process-title">
+                  <span class="process-symbol" aria-hidden="true">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 12h3l2-5 4 10 2-5h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <span class="process-copy"><strong>正在整理今晚的安排</strong><span>已查阅目标和日程，正在生成变更草案</span></span>
+                </span>
+                <span class="process-status"><i class="status-dot"></i><span class="status-label">进行中</span><svg class="chevron" width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              </button>
+
+              <div class="process-body">
+                <ol class="rhythm-track">
+                  <li class="stage completed" data-stage="understand">
+                    <span class="dev-tag">loop_step: planning · ≤ 1</span>
+                    <button type="button" class="stage-button" aria-expanded="false">
+                      <span class="beat" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="m5 12 4 4L19 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                      <span class="stage-name"><strong>理解你的安排意图</strong><span>今晚完成吉他练习和英语口语，各一次</span></span>
+                      <span class="stage-trailing">已完成</span>
+                    </button>
+                  </li>
+
+                  <li class="stage completed expanded" data-stage="context">
+                    <span class="dev-tag">tool_started/completed × 3</span>
+                    <button type="button" class="stage-button" aria-expanded="true">
+                      <span class="beat" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="m5 12 4 4L19 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                      <span class="stage-name"><strong>查阅相关信息</strong><span>核对了 1 个目标、1 个 Routine 和今日日程</span></span>
+                      <span class="stage-trailing">3 个动作<svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+                    </button>
+                    <div class="tool-list">
+                      <article class="tool" data-tool-id="call_goal_01">
+                        <span class="dev-tag">toolCallId: call_goal_01</span>
+                        <button type="button" class="tool-button" aria-expanded="false">
+                          <span class="tool-icon" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg></span>
+                          <span class="tool-copy"><strong>读取目标</strong><span>找到「提升吉他能力」及当前进度</span></span>
+                          <time class="tool-time">0.3s</time>
+                        </button>
+                        <div class="tool-detail">
+                          <dl class="detail-grid"><dt>调用参数</dt><dd>目标：提升吉他能力</dd><dt>结果摘要</dt><dd>进行中；今晚已有《温柔》弹唱练习</dd><dt>简短判断</dt><dd>保留原练习，不创建重复任务</dd></dl>
+                          <button type="button" class="raw-toggle" aria-expanded="false">查看原始参数</button>
+                          <pre class="raw-json">{
+  "toolCallId": "call_goal_01",
+  "toolName": "read_goal_context",
+  "goalId": "goal-guitar",
+  "include": ["progress", "schedule"]
+}</pre>
+                        </div>
+                      </article>
+                      <article class="tool" data-tool-id="call_routine_02">
+                        <span class="dev-tag">toolCallId: call_routine_02</span>
+                        <button type="button" class="tool-button" aria-expanded="false">
+                          <span class="tool-icon" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h10M4 17h13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+                          <span class="tool-copy"><strong>读取 Routine</strong><span>找到「每日英语自由对话练习」</span></span>
+                          <time class="tool-time">0.2s</time>
+                        </button>
+                        <div class="tool-detail">
+                          <dl class="detail-grid"><dt>调用参数</dt><dd>类型：英语口语 Routine</dd><dt>结果摘要</dt><dd>建议练习 60 分钟，今天尚未安排</dd><dt>下一步</dt><dd>在晚间空闲时段中寻找位置</dd></dl>
+                          <button type="button" class="raw-toggle" aria-expanded="false">查看原始参数</button>
+                          <pre class="raw-json">{
+  "toolCallId": "call_routine_02",
+  "toolName": "read_routine_context",
+  "filters": { "status": "active", "date": "today" }
+}</pre>
+                        </div>
+                      </article>
+                      <article class="tool" data-tool-id="call_schedule_03">
+                        <span class="dev-tag">toolCallId: call_schedule_03</span>
+                        <button type="button" class="tool-button" aria-expanded="false">
+                          <span class="tool-icon" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="15" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 3v4M16 3v4M4 10h16" stroke="currentColor" stroke-width="2"/></svg></span>
+                          <span class="tool-copy"><strong>检查今日日程</strong><span>19:00–20:00 已安排吉他；20:30 后空闲</span></span>
+                          <time class="tool-time">0.4s</time>
+                        </button>
+                        <div class="tool-detail">
+                          <dl class="detail-grid"><dt>检查范围</dt><dd>今天 18:00–23:00</dd><dt>检查结果</dt><dd>吉他练习已存在；20:30–21:30 无冲突</dd><dt>简短判断</dt><dd>只需新增英语练习，避免重复排期</dd></dl>
+                          <button type="button" class="raw-toggle" aria-expanded="false">查看原始参数</button>
+                          <pre class="raw-json">{
+  "toolCallId": "call_schedule_03",
+  "toolName": "read_daily_schedule",
+  "date": "2026-07-16",
+  "range": { "start": "18:00", "end": "23:00" }
+}</pre>
+                        </div>
+                      </article>
+                    </div>
+                  </li>
+
+                  <li class="stage current" data-stage="draft">
+                    <span class="dev-tag">propose_change_set</span>
+                    <button type="button" class="stage-button" aria-expanded="false">
+                      <span class="beat" aria-hidden="true"><span style="width:6px;height:6px;border-radius:50%;background:#fff"></span></span>
+                      <span class="stage-name"><strong>形成今晚的调整方案</strong><span>正在生成 2 项可确认变更</span></span>
+                      <span class="stage-trailing">进行中</span>
+                    </button>
+                  </li>
+                </ol>
+                <div class="internal-loop"><span>已完成结果校验与目标状态判断</span></div>
+              </div>
+            </section>
+
+            <div class="message assistant final-answer" hidden>
+              <p>好的，我看了今晚的安排：吉他练习已经存在，因此不会重复创建；英语自由对话练习可以放在晚间空闲时段。</p>
+              <div class="schedule-lines"><div><strong>19:00–20:00</strong>吉他练习《温柔》</div><div><strong>20:30–21:30</strong>英语自由对话练习</div></div>
+              <p>我整理成了一份变更草案，确认后才会写入正式计划。</p>
+            </div>
+
+            <section class="changeset" hidden>
+              <span class="dev-tag">AgentChangeSet · pendingChangeSetIds[]</span>
+              <div class="changeset-head">
+                <div><div class="eyebrow">变更草案</div><h3>今晚的练习安排</h3><p class="changeset-reason">保留已有吉他练习，并补充英语口语时段。继续讨论不会应用草案。</p></div>
+                <span class="risk"><svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M12 8v5m0 3h.01M10.3 4.6 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>需确认</span>
+              </div>
+              <div class="operation-list">
+                <label class="operation"><input type="checkbox" checked /><span><strong>保留吉他练习</strong><span>已有安排，无需重复创建</span></span><time>19:00–20:00</time></label>
+                <label class="operation"><input type="checkbox" checked /><span><strong>新增英语自由对话练习</strong><span>加入今天的个人日程</span></span><time>20:30–21:30</time></label>
+              </div>
+              <div class="changeset-actions"><button type="button" class="primary-action">确认 2 项</button><button type="button" class="secondary-action">放弃草案</button></div>
+            </section>
+
+            <div class="terminal-row" aria-live="polite">
+              <span class="terminal-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="m5 12 4 4L19 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span><strong>变更已应用 · 2 项</strong><span>正式计划已更新</span></span>
+              <button type="button">查看内容</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <button type="button" class="sticky-activity"><span><i></i><b>正在生成变更草案</b></span><span>查看过程 ↑</span></button>
+          <div class="composer">
+            <input aria-label="给小律留言" placeholder="告诉小律你想调整什么…" />
+            <button type="button" class="send-button stop" aria-label="停止处理">
+              <svg class="composer-icon" width="17" height="17" viewBox="0 0 24 24" fill="none"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>
+            </button>
+          </div>
+          <div class="composer-help run-help">处理中仍可编辑草稿；停止后不会自动发送</div>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <div class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const stateButtons = [...document.querySelectorAll('[data-demo-state]')];
+    const process = document.querySelector('.process');
+    const processHeader = document.querySelector('.process-header');
+    const processTitle = document.querySelector('.process-copy strong');
+    const processSummary = document.querySelector('.process-copy span');
+    const statusLabel = document.querySelector('.status-label');
+    const stages = [...document.querySelectorAll('.stage')];
+    const finalAnswer = document.querySelector('.final-answer');
+    const changeSet = document.querySelector('.changeset');
+    const terminalRow = document.querySelector('.terminal-row');
+    const sticky = document.querySelector('.sticky-activity');
+    const sendButton = document.querySelector('.send-button');
+    const runHelp = document.querySelector('.run-help');
+    const messages = document.querySelector('#messages');
+    const toast = document.querySelector('.toast');
+    let currentState = 'running';
+
+    function iconMarkup(kind) {
+      if (kind === 'check') return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="m5 12 4 4L19 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      if (kind === 'alert') return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M12 7v6m0 4h.01" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
+      if (kind === 'question') return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M9.8 9a2.4 2.4 0 1 1 3 2.3c-.8.3-.8 1-.8 1.7m0 4h.01" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/></svg>';
+      return '<span style="width:6px;height:6px;border-radius:50%;background:#fff"></span>';
+    }
+
+    function setStage(stage, status, title, summary, trailing) {
+      stage.classList.remove('completed', 'current', 'confirm', 'failed');
+      stage.classList.add(status);
+      stage.querySelector('.beat').innerHTML = iconMarkup(status === 'completed' ? 'check' : status === 'confirm' ? 'question' : status === 'failed' ? 'alert' : 'dot');
+      stage.querySelector('.stage-name strong').textContent = title;
+      stage.querySelector('.stage-name span').textContent = summary;
+      stage.querySelector('.stage-trailing').childNodes[0].textContent = trailing;
+    }
+
+    function setState(state) {
+      currentState = state;
+      const scheduleTool = document.querySelector('[data-tool-id="call_schedule_03"]');
+      const scheduleToolSummary = scheduleTool.querySelector('.tool-copy span');
+      scheduleTool.classList.remove('failed');
+      scheduleToolSummary.textContent = '19:00–20:00 已安排吉他；20:30 后空闲';
+      terminalRow.querySelector('strong').textContent = '变更已应用 · 2 项';
+      terminalRow.querySelector('span span').textContent = '正式计划已更新';
+      stateButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.demoState === state));
+      process.dataset.state = state;
+      finalAnswer.hidden = state === 'running';
+      changeSet.hidden = state !== 'confirm';
+      terminalRow.classList.toggle('visible', state === 'complete');
+      sticky.classList.toggle('visible', state === 'running');
+      sendButton.classList.toggle('stop', state === 'running');
+      runHelp.textContent = state === 'running' ? '处理中仍可编辑草稿；停止后不会自动发送' : state === 'confirm' ? '继续讨论不会应用草案' : '小律可能会参考当前页面与本轮上下文';
+
+      if (state === 'running') {
+        process.classList.add('open');
+        processHeader.setAttribute('aria-expanded', 'true');
+        processTitle.textContent = '正在整理今晚的安排';
+        processSummary.textContent = '已查阅目标和日程，正在生成变更草案';
+        statusLabel.textContent = '进行中';
+        setStage(stages[0], 'completed', '理解你的安排意图', '今晚完成吉他练习和英语口语，各一次', '已完成');
+        setStage(stages[1], 'completed', '查阅相关信息', '核对了 1 个目标、1 个 Routine 和今日日程', '3 个动作');
+        setStage(stages[2], 'current', '形成今晚的调整方案', '正在生成 2 项可确认变更', '进行中');
+      } else if (state === 'complete') {
+        process.classList.remove('open');
+        processHeader.setAttribute('aria-expanded', 'false');
+        processTitle.textContent = '已完成 6 个动作';
+        processSummary.textContent = '查看了目标与日程，形成 2 项安排';
+        statusLabel.textContent = '已完成';
+        setStage(stages[0], 'completed', '理解你的安排意图', '今晚完成吉他练习和英语口语，各一次', '已完成');
+        setStage(stages[1], 'completed', '查阅相关信息', '核对了 1 个目标、1 个 Routine 和今日日程', '3 个动作');
+        setStage(stages[2], 'completed', '形成今晚的调整方案', '已生成并应用 2 项变更', '已完成');
+      } else if (state === 'confirm') {
+        process.classList.remove('open');
+        processHeader.setAttribute('aria-expanded', 'false');
+        processTitle.textContent = '已完成 6 个动作';
+        processSummary.textContent = '查看了目标与日程，草案等待你的确认';
+        statusLabel.textContent = '等待确认';
+        setStage(stages[0], 'completed', '理解你的安排意图', '今晚完成吉他练习和英语口语，各一次', '已完成');
+        setStage(stages[1], 'completed', '查阅相关信息', '核对了 1 个目标、1 个 Routine 和今日日程', '3 个动作');
+        setStage(stages[2], 'confirm', '形成今晚的调整方案', '2 项变更尚未写入正式计划', '待确认');
+      } else {
+        process.classList.add('open');
+        processHeader.setAttribute('aria-expanded', 'true');
+        processTitle.textContent = '日程读取遇到问题';
+        processSummary.textContent = '已有信息保留，可以重试失败的动作';
+        statusLabel.textContent = '需要处理';
+        setStage(stages[0], 'completed', '理解你的安排意图', '今晚完成吉他练习和英语口语，各一次', '已完成');
+        setStage(stages[1], 'failed', '查阅相关信息', '今日日程读取超时，目标与 Routine 已保留', '读取失败');
+        setStage(stages[2], 'current', '等待恢复', '重试后将继续形成方案，不会重复已完成动作', '可重试');
+        scheduleTool.classList.add('failed');
+        scheduleToolSummary.textContent = '读取超时 · 可单独重试，不重复前两个动作';
+        finalAnswer.hidden = true;
+      }
+      processHeader.querySelector('.chevron').classList.toggle('open', process.classList.contains('open'));
+      if (state !== 'running') setTimeout(() => messages.scrollTo({ top: messages.scrollHeight, behavior: 'smooth' }), 40);
+    }
+
+    stateButtons.forEach(button => button.addEventListener('click', () => setState(button.dataset.demoState)));
+    processHeader.addEventListener('click', () => {
+      process.classList.toggle('open');
+      processHeader.setAttribute('aria-expanded', String(process.classList.contains('open')));
+    });
+    document.querySelectorAll('.stage-button').forEach(button => button.addEventListener('click', () => {
+      const stage = button.closest('.stage');
+      if (!stage.querySelector('.tool-list')) return;
+      stage.classList.toggle('expanded');
+      button.setAttribute('aria-expanded', String(stage.classList.contains('expanded')));
+    }));
+    document.querySelectorAll('.tool-button').forEach(button => button.addEventListener('click', () => {
+      const tool = button.closest('.tool');
+      document.querySelectorAll('.tool.expanded').forEach(item => { if (item !== tool) item.classList.remove('expanded'); });
+      tool.classList.toggle('expanded');
+      document.querySelectorAll('.tool-button').forEach(item => item.setAttribute('aria-expanded', String(item.closest('.tool').classList.contains('expanded'))));
+    }));
+    document.querySelectorAll('.raw-toggle').forEach(button => button.addEventListener('click', () => {
+      const raw = button.nextElementSibling;
+      raw.classList.toggle('open');
+      button.setAttribute('aria-expanded', String(raw.classList.contains('open')));
+      button.textContent = raw.classList.contains('open') ? '收起原始参数' : '查看原始参数';
+    }));
+    document.querySelector('.annotation-toggle').addEventListener('click', event => {
+      const active = document.body.classList.toggle('annotated');
+      event.currentTarget.classList.toggle('active', active);
+      event.currentTarget.setAttribute('aria-pressed', String(active));
+    });
+    document.querySelectorAll('.operation input').forEach(input => input.addEventListener('change', () => {
+      const count = document.querySelectorAll('.operation input:checked').length;
+      const button = document.querySelector('.primary-action');
+      button.textContent = `确认 ${count} 项`;
+      button.disabled = count === 0;
+    }));
+    document.querySelector('.primary-action').addEventListener('click', () => {
+      changeSet.hidden = true;
+      terminalRow.classList.add('visible');
+      showToast('已应用选中的变更');
+    });
+    document.querySelector('.secondary-action').addEventListener('click', () => {
+      changeSet.hidden = true;
+      terminalRow.classList.add('visible');
+      terminalRow.querySelector('strong').textContent = '已放弃这份草案';
+      terminalRow.querySelector('span span').textContent = '正式计划没有变化';
+      showToast('草案已放弃，正式计划没有变化');
+    });
+    sticky.addEventListener('click', () => process.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    sendButton.addEventListener('click', () => {
+      if (currentState === 'running') { setState('failed'); showToast('已停止当前处理'); }
+      else showToast('这是交互原型，未发送真实消息');
+    });
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add('visible');
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => toast.classList.remove('visible'), 2400);
+    }
+    setState('running');
+  </script>
+</body>
+</html>
