@@ -3,7 +3,7 @@
   "name": "v03-release",
   "title": "v0.3.0 版本规划",
   "description": "",
-  "status": "planning",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "skyeLiao",
   "assignee": "skyeLiao",
   "createdAt": "2026-07-09",
-  "completedAt": null,
+  "completedAt": "2026-07-16",
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
@@ -20,7 +20,9 @@
   "subtasks": [],
   "children": [
     "07-09-homepage-insight-cards",
-    "07-10-review-rhythm-evaluation"
+    "07-10-review-rhythm-evaluation",
+    "07-16-agent-chat-ux-loop",
+    "07-11-fix-review-rhythm-followups"
   ],
   "parent": null,
   "relatedFiles": [],
