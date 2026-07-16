@@ -19,7 +19,10 @@
 
 ### Main Changes
 
-(Add details)
+- 将周视图表头与时间网格合并到同一滚动容器，消除纵向滚动条导致的列宽偏移。
+- 仅为“今天”显示整列淡底色，锚点日期改为轻量下划线标识。
+- 显式固定时间刻度列与七天日程网格的网格位置，防止纵向堆叠。
+- 补充日历布局与 Next.js dev/build 输出目录相关的前端规范及回归分析。
 
 ### Git Commits
 
@@ -29,7 +32,10 @@
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm run typecheck`
+- [OK] `npm run build`
+- [OK] Chrome 周视图视觉验证：时间刻度、09:00 日程、七列边界及今日底色均正确
 
 ### Status
 
@@ -126,6 +132,39 @@
 | Hash | Message |
 |------|---------|
 | `acce0b7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 5: 修复周视图布局与日期高亮
+
+**Date**: 2026-07-16
+**Task**: 修复周视图布局与日期高亮
+**Branch**: `main`
+
+### Summary
+
+统一周视图表头与时间网格的滚动坐标系，区分今天与锚点日期高亮；修复并复盘 dev/build 共用 .next 导致的样式回归，完成页面、lint、类型和生产构建验证。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `380eee2` | (see git log) |
 
 ### Testing
 
