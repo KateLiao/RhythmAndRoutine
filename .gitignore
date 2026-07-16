@@ -6,3 +6,4 @@ node_modules/
 .DS_Store
 tsconfig.tsbuildinfo
 src/generated/prisma/
+tmp/

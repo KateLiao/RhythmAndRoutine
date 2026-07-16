@@ -1,4 +1,5 @@
 import type { Goal, ScheduleItem } from "@/lib/demo-data";
+import { scheduleInvestedMinutes } from "@/lib/demo-data";
 import type { RhythmSignalRecord } from "@/lib/client-api";
 import { buildMomentCandidates } from "@/lib/home-insights/compute-moment";
 import { currentMinutes } from "@/lib/home-insights/helpers";
@@ -219,11 +220,11 @@ export async function buildHomeInsightFacts(userId: string, timezone: string): P
     const [eh, em] = item.end.split(":").map(Number);
     return sum + Math.max(0, eh * 60 + em - sh * 60 - sm);
   }, 0);
-  const completedMinutes = weekBlocks.filter((item) => item.status === "completed").reduce((sum, item) => sum + (item.execution?.actualMinutes ?? 0), 0);
+  const completedMinutes = weekBlocks.filter((item) => item.status === "completed").reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
   const goalInvestment = goals.filter((g) => g.status === "active").map((goal) => ({
     goalId: goal.id,
     title: goal.title,
-    investedMinutes: weekBlocks.filter((item) => item.goalId === goal.id && item.status === "completed").reduce((sum, item) => sum + (item.execution?.actualMinutes ?? 0), 0),
+    investedMinutes: weekBlocks.filter((item) => item.goalId === goal.id && item.status === "completed").reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0),
   }));
 
   const executionByPeriod: Record<string, { done: number; total: number }> = {};

@@ -4,7 +4,7 @@ import { OpenAICompatibleAdapter } from "@/agent/openai-compatible-adapter";
 import { resolveCapabilityProvider, resolveFallbackProvider } from "@/agent/provider-config";
 import { FallbackModelAdapter } from "@/agent/fallback-model-adapter";
 import { createToolRegistry, type AgentDomainGateway } from "@/agent/tool-registry";
-import { buildToolStepDetail, summarizeToolResult, toolDisplayLabel, toolProcessingLabel } from "@/agent/tool-labels";
+import { buildToolStepDetail, formatToolInputPreview, summarizeToolInput, summarizeToolResult, toolDisplayLabel, toolProcessingLabel } from "@/agent/tool-labels";
 import type { RunEvent } from "@/agent/types";
 import type { ChangeSetDraft } from "@/domain/schemas";
 import { createPendingChangeSet } from "@/server/services/change-sets";
@@ -13,7 +13,9 @@ import { PrismaContextSource } from "@/agent/prisma-context-source";
 import { PrismaRunStore } from "@/agent/prisma-run-store";
 import { ensureLocalUser, LOCAL_USER_ID } from "@/server/auth";
 import { parseAgentScheduleWindow } from "@/lib/timezone";
-import { listScheduleBlocks } from "@/server/services/schedule";
+import { listScheduleBlocks, readSimilarScheduleHistory } from "@/server/services/schedule";
+import { buildAgentScheduleWindowResult, validateScheduleCandidates } from "@/server/services/agent-schedule-analysis";
+import { planSimilarScheduleQueries, runProgressiveSimilarScheduleSearch } from "@/agent/similar-schedule-query-planner";
 
 const requestSchema = z.object({
   prompt: z.string().trim().min(1).max(4000),
@@ -21,6 +23,7 @@ const requestSchema = z.object({
   provider: z.string().optional(),
   model: z.string().optional(),
   messages: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(8000) })).max(20).default([]),
+  conversationSummary: z.string().max(2000).optional(),
   page: z.object({ path: z.string().max(100), selectedEntityId: z.string().optional() }).optional(),
   business: z.record(z.string(), z.unknown()).default({}),
 });
@@ -38,15 +41,34 @@ type StreamPayload =
  */
 function enrichRunEvent(event: RunEvent, timeZone: string): StreamPayload {
   if (event.type === "tool_started") {
-    return { ...event, label: toolDisplayLabel(event.tool) };
+    const inputSummary = summarizeToolInput(event.tool, event.input);
+    return {
+      ...event,
+      label: toolDisplayLabel(event.tool),
+      summary: inputSummary,
+      detail: {
+        inputSummary,
+        inputPreview: formatToolInputPreview(event.input),
+        rawInputJson: formatToolInputPreview(event.input),
+        toolName: event.tool,
+      },
+    };
   }
   if (event.type === "tool_completed") {
     const input = event.input && typeof event.input === "object" ? event.input as Record<string, unknown> : undefined;
+    const inputSummary = summarizeToolInput(event.tool, event.input);
+    const detail = buildToolStepDetail(event.tool, event.result, input, timeZone);
     return {
       ...event,
       label: toolDisplayLabel(event.tool),
       summary: summarizeToolResult(event.tool, event.result),
-      detail: buildToolStepDetail(event.tool, event.result, input, timeZone),
+      detail: {
+        ...detail,
+        inputSummary,
+        inputPreview: formatToolInputPreview(event.input),
+        rawInputJson: formatToolInputPreview(event.input),
+        toolName: event.tool,
+      },
     };
   }
   return event;
@@ -94,7 +116,18 @@ export async function POST(request: Request) {
                 }
               : undefined,
             recentMessages: input.messages,
+            conversationSummary: input.conversationSummary,
           });
+          if (input.conversationSummary?.trim()) {
+            context.manifest = [
+              ...context.manifest,
+              {
+                entityType: "conversation_summary",
+                entityId: `chars:${input.conversationSummary.length}`,
+                reason: `summaryUsed=true;summaryChars=${input.conversationSummary.length}`,
+              },
+            ];
+          }
         } catch {
           const scopedGoals = input.page?.selectedEntityId && Array.isArray(input.business.goals)
             ? (input.business.goals as Array<{ id?: string }>).filter((goal) => goal.id === input.page?.selectedEntityId)
@@ -109,20 +142,53 @@ export async function POST(request: Request) {
                     : undefined,
                 }
               : undefined,
-            conversation: { recentMessages: input.messages },
+            conversation: { recentMessages: input.messages, summary: input.conversationSummary },
             business: { ...input.business, goals: scopedGoals },
-            manifest: [],
+            manifest: input.conversationSummary?.trim()
+              ? [{ entityType: "conversation_summary", entityId: `chars:${input.conversationSummary.length}`, reason: `summaryUsed=true;summaryChars=${input.conversationSummary.length}` }]
+              : [],
           };
         }
 
         emit({ type: "status", phase: "thinking", message: "正在分析并准备回复…" });
 
         const contextSource = new PrismaContextSource();
+        const adapter = new FallbackModelAdapter(new OpenAICompatibleAdapter(provider), fallback ? { adapter: new OpenAICompatibleAdapter(fallback.provider), model: fallback.model } : undefined);
         const gateway: AgentDomainGateway = {
           readGoalContext: async (_userId, goalId) => (await contextSource.getGoalContext(LOCAL_USER_ID, goalId)).data,
           readScheduleWindow: async (_userId, from, to) => {
             const window = parseAgentScheduleWindow(from, to, context.user.timezone);
-            return listScheduleBlocks(LOCAL_USER_ID, window.from, window.to);
+            const items = await listScheduleBlocks(LOCAL_USER_ID, window.from, window.to);
+            return buildAgentScheduleWindowResult(items, window.from, window.to, context.user.timezone);
+          },
+          readSimilarScheduleHistory: async (_userId, historyInput) => {
+            const plan = await planSimilarScheduleQueries(adapter, {
+              prompt: input.prompt,
+              queryHint: historyInput.query,
+              model: resolved.model,
+              signal: request.signal,
+            });
+            const search = await runProgressiveSimilarScheduleSearch(plan, (tier) => readSimilarScheduleHistory(
+              LOCAL_USER_ID,
+              {
+                ...historyInput,
+                query: undefined,
+                queries: tier.queries,
+                matchMode: tier.level === "exact" ? "exact" : "contains",
+              },
+              context.user.timezone,
+            ));
+            return { ...search.result, queryPlan: plan, matchedTier: search.matchedTier, attempts: search.attempts };
+          },
+          validateScheduleCandidates: async (_userId, candidates) => {
+            const normalized = candidates.map((candidate) => {
+              const window = parseAgentScheduleWindow(candidate.startsAt, candidate.endsAt, context.user.timezone);
+              return { ...candidate, startsAt: window.from.toISOString(), endsAt: window.to.toISOString() };
+            });
+            const from = new Date(Math.min(...normalized.map((candidate) => new Date(candidate.startsAt).getTime())));
+            const to = new Date(Math.max(...normalized.map((candidate) => new Date(candidate.endsAt).getTime())));
+            const items = await listScheduleBlocks(LOCAL_USER_ID, from, to);
+            return validateScheduleCandidates(normalized, buildAgentScheduleWindowResult(items, from, to, context.user.timezone));
           },
           readExecutionHistory: async (_userId, days) => (await contextSource.getExecutionHistory(LOCAL_USER_ID, days)).data,
           readRecentReviews: async (_userId, limit) => (await contextSource.getRecentReviews(LOCAL_USER_ID, limit)).data,
@@ -146,7 +212,6 @@ export async function POST(request: Request) {
         };
 
         const store = new PrismaRunStore();
-        const adapter = new FallbackModelAdapter(new OpenAICompatibleAdapter(provider), fallback ? { adapter: new OpenAICompatibleAdapter(fallback.provider), model: fallback.model } : undefined);
         const runtime = new AgentRuntime(adapter, createToolRegistry(gateway), store);
         let text = "";
         let hasText = false;

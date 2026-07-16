@@ -110,12 +110,15 @@ export function summarizeBusinessForPrompt(
  * @param business - ContextBuilder 装配的业务数据块
  * @param page - 可选页面上下文
  * @param timezone - 用户 IANA 时区
+ * @param prompt - 当前用户请求（用于日程意图提示）
+ * @param conversationSummary - 可选对话历史摘要
  */
 export function buildAgentContextSummary(
   business: Record<string, unknown>,
   page?: AgentContext["page"],
   timezone = "Asia/Shanghai",
   prompt?: string,
+  conversationSummary?: string,
 ): string {
   const view = (page?.path ?? "goals") as "today" | "goals" | "goal-detail" | "task-detail" | "routines" | "review" | "settings";
   const scheduleHint = prompt ? inferScheduleIntentHint(prompt, view) : null;
@@ -126,6 +129,13 @@ export function buildAgentContextSummary(
       : scheduleHint === "routine"
         ? "【日历意图提示】用户表述含重复语义，优先使用 routine 而非多个 schedule。"
         : "";
-  const base = `${formatAgentTemporalAnchor(new Date(), timezone)}\n${summarizeBusinessForPrompt(business, page)}`;
-  return hintLine ? `${base}\n${hintLine}` : base;
+  const lines = [
+    formatAgentTemporalAnchor(new Date(), timezone),
+    summarizeBusinessForPrompt(business, page),
+  ];
+  if (conversationSummary?.trim()) {
+    lines.push(`【对话摘要】\n${conversationSummary.trim().slice(0, 2000)}`);
+  }
+  if (hintLine) lines.push(hintLine);
+  return lines.filter(Boolean).join("\n");
 }

@@ -120,8 +120,18 @@ export async function createTask(userId: string, goalId: string, raw: unknown) {
   return serializeTask(task);
 }
 
+/**
+ * 更新任务的可编辑字段与非完成状态；completed 必须改走用户确认完成接口。
+ * @param userId - 当前用户 ID
+ * @param taskId - 待更新任务 ID
+ * @param raw - 待校验的任务更新请求
+ * @returns 序列化后的最新任务
+ */
 export async function updateTask(userId: string, taskId: string, raw: unknown) {
   const input = updateTaskSchema.parse(raw);
+  if (input.status === "completed") {
+    throw new DomainError("TASK_COMPLETION_REQUIRES_CONFIRMATION", "任务完成必须通过 /api/tasks/:id/complete 由你确认，并写入完成总结。", 400);
+  }
   const result = await getDb().task.updateMany({
     where: { id: taskId, version: input.expectedVersion, archivedAt: null, goal: { userId } },
     data: {
@@ -131,7 +141,7 @@ export async function updateTask(userId: string, taskId: string, raw: unknown) {
       ...(input.focusLevel !== undefined && { focusLevel: input.focusLevel }),
       ...(input.status !== undefined && {
         status: taskStatusMap[input.status],
-        completedAt: input.status === "completed" ? new Date() : ["ready", "draft", "scheduled", "in_progress", "blocked"].includes(input.status) ? null : undefined,
+        completedAt: ["ready", "draft", "scheduled", "in_progress", "blocked"].includes(input.status) ? null : undefined,
       }),
       ...(input.rhythmConditions !== undefined && { rhythmConditions: input.rhythmConditions }), ...(input.milestoneId !== undefined && { milestoneId: input.milestoneId }), ...(input.parentTaskId !== undefined && { parentTaskId: input.parentTaskId }),
       version: { increment: 1 },

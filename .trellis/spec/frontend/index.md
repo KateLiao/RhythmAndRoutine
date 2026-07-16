@@ -20,6 +20,8 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [State Management](./state-management.md) | Local state, global state, server state | To fill |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
+| [Agent Schedule Planning](./agent-schedule-planning.md) | Query planning, timezone, availability and deterministic validation contracts | Active |
+| [Agent Runtime](./agent-runtime.md) | Token budgets, tool evidence compression and chronological process-event contracts | Active |
 
 ---
 

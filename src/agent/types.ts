@@ -131,8 +131,8 @@ export type RunEvent =
   | { type: "loop_step"; kind: "planning" | "verification" | "decision" | "final" | "recovery"; label: string; summary?: string; goalStatus?: LoopGoalStatus; nextAction?: LoopNextAction; detail?: { scope?: string; result?: string; judgment?: string; nextAction?: string; missingInformation?: string[] } }
   | { type: "text_delta"; text: string }
   | { type: "model_fallback"; from: string; to: string; reason: string }
-  | { type: "tool_started"; tool: string }
-  | { type: "tool_completed"; tool: string; input?: unknown; result: ToolResult }
+  | { type: "tool_started"; tool: string; toolCallId: string; input?: unknown }
+  | { type: "tool_completed"; tool: string; toolCallId: string; input?: unknown; result: ToolResult }
   | { type: "approval_required"; changeSetId: string }
   | { type: "run_completed"; text: string }
   | { type: "run_failed"; code: string; message: string };

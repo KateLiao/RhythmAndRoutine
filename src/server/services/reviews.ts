@@ -2,12 +2,17 @@ import { ReviewStatus, ReviewType } from "@/generated/prisma/enums";
 import type { ScheduleBlockStatus } from "@/generated/prisma/enums";
 import { getDb } from "@/lib/db";
 import { DomainError } from "@/server/api-response";
-import { ensureLocalUser } from "@/server/auth";
+import { ensureLocalUser, LOCAL_USER_ID } from "@/server/auth";
 import { reviewResultSchema, rhythmSignalExtractionSchema } from "@/domain/schemas";
 import type { ReviewResult } from "@/domain/schemas";
 import { isReadyForCompletionSuggest } from "@/server/services/schedule";
 import { expandRoutineOccurrences } from "@/server/services/routines";
 import { zonedDateKey } from "@/lib/timezone";
+import {
+  buildReviewIdempotencyKey,
+  resolveMostRecentDueReviewPeriods,
+  type ReviewScheduleSettings,
+} from "@/server/services/review-schedule";
 
 /** 写入 prompt 的产品约束：结束后才记录执行；不得捏造；不得替用户宣布完成。 */
 const PRODUCT_CONSTRAINTS = "用户只在日程结束后记录执行结果；status=planned 且计划时间已过，不代表用户没有开始，只是还没回来记录。禁止编造未在数据中出现的内容。必须区分「事实」与「你的判断」。最终输出是直接写给当前用户看的产品报告，不是数据审计或调试日志：必须使用「你」作为称谓，禁止使用「用户」「该用户」「这位用户」等第三人称表述；禁止暴露任何数据库/API/JSON 字段名、英文枚举值、布尔值、代码式键值对或带字段名的括号说明，例如 tags、comfortable、timeFit、quality、status、result、smooth、good、great、comfortable: true、时间适配度（timeFit）='good' 都不能出现在用户可见字段中。所有内部参数只用于理解证据，输出时必须改写为自然中文，例如“反馈较顺畅”“时间安排比较匹配”“质量反馈很好”“执行中有阻力”。不得在任何字段中宣布 Task、Milestone 或 Outcome 已经完成——最多只能说「建议检查」或「建议确认」，最终是否完成由用户自己确认。";
@@ -31,6 +36,7 @@ type PeriodBlock = {
     nextAction: string | null;
     rhythmFeedback: { tags: string[]; note: string | null; comfortable: boolean | null; timeFit: string | null } | null;
   } | null;
+  linkedTasks: Array<{ taskId: string }>;
   task: { id: string; title: string } | null;
   routine: { id: string; title: string } | null;
   goal: { id: string; title: string } | null;
@@ -49,10 +55,74 @@ type PeriodMetrics = {
 
 const RESISTANCE_TAGS = new Set(["resistant", "interrupted", "barely_completed"]);
 
+export type ReviewSyncResult = {
+  generated: Array<"daily" | "weekly">;
+  skipped: Array<"daily" | "weekly">;
+  failed: Array<{ type: "daily" | "weekly"; message: string }>;
+};
+
 /**
- * 列出用户最近的回顾记录。
+ * 判断一份到期回顾是否需要生成：不存在时生成，失败记录允许重试，其余状态均跳过。
+ * @param existingStatus - 同一幂等周期已有记录的状态；不存在时传 null 或 undefined
+ * @returns 是否应调用生成服务
+ */
+export function shouldGenerateDueReview(existingStatus: ReviewStatus | null | undefined): boolean {
+  return existingStatus == null || existingStatus === ReviewStatus.FAILED;
+}
+
+/**
+ * 幂等同步用户最近已经到期的日、周回顾，每种类型一次最多生成一份。
+ * 单份生成失败会保留 FAILED 记录并继续处理另一类型，避免读取回顾时因自动恢复失败而不可用。
+ * @param user - 用户 ID、时区与回顾触发设置
+ * @param now - 同步判定使用的当前时刻
+ * @returns 各回顾类型的生成、跳过与失败结果
+ */
+export async function syncDueReviews(
+  user: { id: string } & ReviewScheduleSettings,
+  now = new Date(),
+): Promise<ReviewSyncResult> {
+  const periods = resolveMostRecentDueReviewPeriods(user, now);
+  const targets = [periods.daily, periods.weekly];
+  const keys = targets.map((target) => buildReviewIdempotencyKey(
+    user.id,
+    target.type,
+    target.periodStart,
+    target.periodEnd,
+  ));
+  const existingReviews = await getDb().review.findMany({
+    where: { idempotencyKey: { in: keys } },
+    select: { idempotencyKey: true, status: true },
+  });
+  const existingStatusByKey = new Map(
+    existingReviews.map((review) => [review.idempotencyKey, review.status]),
+  );
+  const result: ReviewSyncResult = { generated: [], skipped: [], failed: [] };
+
+  for (const target of targets) {
+    const key = buildReviewIdempotencyKey(user.id, target.type, target.periodStart, target.periodEnd);
+    if (!shouldGenerateDueReview(existingStatusByKey.get(key))) {
+      result.skipped.push(target.type);
+      continue;
+    }
+    try {
+      await generateReview(user.id, target.type, target.periodStart, target.periodEnd);
+      result.generated.push(target.type);
+    } catch (error) {
+      result.failed.push({
+        type: target.type,
+        message: error instanceof Error ? error.message : "回顾生成失败",
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * 列出用户最近的回顾记录；到期同步由读取入口在调用本函数前显式执行。
  * @param userId - 用户 ID
  * @param limit - 最多返回条数（上限 50）
+ * @returns 序列化后的回顾记录
  */
 export async function listReviews(userId: string, limit = 12) {
   await ensureLocalUser();
@@ -67,11 +137,15 @@ export async function listReviews(userId: string, limit = 12) {
  * @param type - 回顾类型（daily / weekly）
  * @param periodStart - 回顾周期起始时间（UTC）
  * @param periodEnd - 回顾周期结束时间（UTC）
+ * @returns 序列化后的回顾记录
  */
 export async function generateReview(userId: string, type: "daily" | "weekly", periodStart: Date, periodEnd: Date) {
-  const user = await ensureLocalUser();
+  const user = userId === LOCAL_USER_ID
+    ? await ensureLocalUser()
+    : await getDb().user.findUnique({ where: { id: userId } });
+  if (!user) throw new DomainError("USER_NOT_FOUND", "没有找到需要生成回顾的用户。", 404);
   const timezone = user.timezone;
-  const idempotencyKey = `${userId}:${type}:${periodStart.toISOString()}:${periodEnd.toISOString()}`;
+  const idempotencyKey = buildReviewIdempotencyKey(userId, type, periodStart, periodEnd);
   await getDb().review.upsert({ where: { idempotencyKey }, create: { userId, type: type === "daily" ? ReviewType.DAILY : ReviewType.WEEKLY, periodStart, periodEnd, status: ReviewStatus.GENERATING, idempotencyKey }, update: { status: ReviewStatus.GENERATING } });
 
   try {
@@ -158,6 +232,7 @@ async function fetchPeriodBlocks(userId: string, periodStart: Date, periodEnd: D
     where: { userId, deletedAt: null, startsAt: { gte: periodStart, lt: periodEnd } },
     include: {
       executionRecord: { include: { rhythmFeedback: true } },
+      linkedTasks: { select: { taskId: true } },
       task: { select: { id: true, title: true } },
       routine: { select: { id: true, title: true } },
       goal: { select: { id: true, title: true } },
@@ -406,13 +481,25 @@ function rankBlocksForWeeklyExcerpt(blocks: PeriodBlock[]) {
 }
 
 /**
+ * 汇总周期块的主任务与多任务关联 ID，并按稳定 ID 去重。
+ * @param periodBlocks - 周期内日程块及其 ScheduleBlockTask 关联
+ * @returns 去重后的任务 ID 列表
+ */
+export function collectPeriodTaskIds(periodBlocks: Array<Pick<PeriodBlock, "taskId" | "linkedTasks">>): string[] {
+  return [...new Set(periodBlocks.flatMap((block) => [
+    ...(block.taskId ? [block.taskId] : []),
+    ...block.linkedTasks.map((link) => link.taskId),
+  ]))];
+}
+
+/**
  * 查询本周有日程活动的任务，计算其全量投入与「建议确认完成」信号。
  * 只描述证据，不修改任务状态；是否完成仍由用户主动确认。
  * @param userId - 用户 ID
  * @param periodBlocks - 本周期内的日程块，用于定位本周有活动的任务
  */
 async function buildTaskProgress(userId: string, periodBlocks: PeriodBlock[]): Promise<TaskProgressFact[]> {
-  const taskIds = [...new Set(periodBlocks.map((block) => block.taskId).filter((id): id is string => Boolean(id)))];
+  const taskIds = collectPeriodTaskIds(periodBlocks);
   if (!taskIds.length) return [];
   const tasks = await getDb().task.findMany({
     where: { id: { in: taskIds }, archivedAt: null },
@@ -489,26 +576,40 @@ function buildScheduleDeviation(blocks: PeriodBlock[]): ScheduleDeviationFact {
 
 /**
  * 为本周期有活动的目标提取「建议检查」线索：本周投入、待检查 Milestone、未完成 Outcome。
- * 只输出证据，不判定目标是否达成。
+ * 只输出证据，不判定目标是否达成。目标来源同时覆盖块上的 goalId，以及经 taskId / ScheduleBlockTask 反查到的目标。
  * @param userId - 用户 ID
  * @param periodBlocks - 周期内日程块，用于定位活跃目标与计算周期投入
  */
 async function buildGoalProgressHints(userId: string, periodBlocks: PeriodBlock[]): Promise<GoalProgressHintFact[]> {
-  const goalIds = [...new Set(periodBlocks.map((block) => block.goalId).filter((id): id is string => Boolean(id)))];
+  const goalIdsFromBlocks = periodBlocks.map((block) => block.goalId).filter((id): id is string => Boolean(id));
+  const taskIds = collectPeriodTaskIds(periodBlocks);
+  const linkedGoalIds = taskIds.length
+    ? (await getDb().task.findMany({ where: { id: { in: taskIds }, archivedAt: null }, select: { goalId: true } })).map((task) => task.goalId)
+    : [];
+  const goalIds = [...new Set([...goalIdsFromBlocks, ...linkedGoalIds])];
   if (!goalIds.length) return [];
+
   const goals = await getDb().goal.findMany({
     where: { id: { in: goalIds }, userId, archivedAt: null },
     select: {
       id: true,
       title: true,
+      tasks: { where: { archivedAt: null }, select: { id: true } },
       milestones: { where: { status: { in: ["PENDING", "READY_FOR_REVIEW"] } }, select: { title: true, status: true } },
       outcomes: { where: { completedAt: null }, select: { description: true } },
     },
   });
+
   return goals
     .map((goal) => {
+      const taskIdSet = new Set(goal.tasks.map((task) => task.id));
       const investedMinutes = periodBlocks
-        .filter((block) => block.goalId === goal.id && block.status === "COMPLETED")
+        .filter((block) => {
+          if (block.status !== "COMPLETED") return false;
+          if (block.goalId === goal.id) return true;
+          if (block.taskId && taskIdSet.has(block.taskId)) return true;
+          return block.linkedTasks.some((link) => taskIdSet.has(link.taskId));
+        })
         .reduce((sum, block) => sum + blockInvestedMinutes(block), 0);
       return {
         goalId: goal.id,

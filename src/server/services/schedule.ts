@@ -5,6 +5,7 @@ import { DomainError } from "@/server/api-response";
 import { ensureLocalUser } from "@/server/auth";
 import { createScheduleBlockSchema, executionFeedbackSchema, updateScheduleBlockSchema } from "@/server/validation";
 import { inferScheduleBlockKind } from "@/lib/schedule-block-kind";
+import { formatClock, timeMinutesInTimezone } from "@/lib/calendar/time";
 import { expandRoutineOccurrences } from "@/server/services/routines";
 
 const statusMap = { planned: ScheduleBlockStatus.PLANNED, in_progress: ScheduleBlockStatus.IN_PROGRESS, completed: ScheduleBlockStatus.COMPLETED, missed: ScheduleBlockStatus.MISSED, rescheduled: ScheduleBlockStatus.RESCHEDULED, cancelled: ScheduleBlockStatus.CANCELLED } as const;
@@ -31,6 +32,147 @@ type ScheduleWriteInput = {
   expectedVersion?: number;
   moveInPlace?: boolean;
 };
+
+export type SimilarScheduleHistoryInput = {
+  query?: string;
+  queries?: string[];
+  matchMode?: "exact" | "contains";
+  goalId?: string;
+  taskId?: string;
+  routineId?: string;
+  days: number;
+  limit: number;
+};
+
+export type SimilarScheduleSample = {
+  id: string;
+  title: string;
+  startsAt: Date;
+  endsAt: Date;
+  status: ScheduleBlockStatus;
+};
+
+/** 返回数值数组中位数；空数组返回 0。 */
+function median(values: number[]) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle]! : Math.round((sorted[middle - 1]! + sorted[middle]!) / 2);
+}
+
+/**
+ * 将相似历史日程整理为 Agent 可直接参考的典型时段，而不是让模型自行统计原始时间戳。
+ */
+export function summarizeSimilarScheduleHistory(samples: SimilarScheduleSample[], timezone: string, limit = 12) {
+  const rows = samples.slice(0, limit).map((sample) => {
+    const startMinute = timeMinutesInTimezone(sample.startsAt, timezone);
+    const durationMinutes = Math.max(1, Math.round((sample.endsAt.getTime() - sample.startsAt.getTime()) / 60_000));
+    return { sample, startMinute, durationMinutes };
+  });
+  const typicalStartMinute = median(rows.map((row) => row.startMinute));
+  const typicalDurationMinutes = median(rows.map((row) => row.durationMinutes));
+  const buckets = new Map<number, number>();
+  for (const row of rows) {
+    const bucket = Math.floor(row.startMinute / 30) * 30;
+    buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
+  }
+  const commonWindows = [...buckets.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .slice(0, 3)
+    .map(([startMinute, count]) => ({
+      start: formatClock(startMinute),
+      end: formatClock(Math.min(1439, startMinute + typicalDurationMinutes)),
+      count,
+    }));
+
+  return {
+    sampleCount: rows.length,
+    typicalStartTime: rows.length ? formatClock(typicalStartMinute) : null,
+    typicalDurationMinutes: rows.length ? typicalDurationMinutes : null,
+    commonWindows,
+    samples: rows.map(({ sample }) => ({
+      id: sample.id,
+      title: sample.title,
+      startsAt: sample.startsAt.toISOString(),
+      endsAt: sample.endsAt.toISOString(),
+      status: sample.status.toLowerCase(),
+      localStartsAt: formatLocalDateTime(sample.startsAt, timezone),
+      localEndsAt: formatLocalDateTime(sample.endsAt, timezone),
+    })),
+  };
+}
+
+/**
+ * 查询过去相似活动的安排时间，并按实体关联与标题相似度排序。
+ * 仅用于“照往常/按习惯安排”的参考，不代表推荐时段一定可用。
+ */
+export async function readSimilarScheduleHistory(
+  userId: string,
+  input: SimilarScheduleHistoryInput,
+  timezone: string,
+  now = new Date(),
+) {
+  await ensureLocalUser();
+  const query = input.query?.trim();
+  const queries = [...new Set([...(input.queries ?? []), ...(query ? [query] : [])].map((value) => value.trim()).filter(Boolean))];
+  const similarity: Prisma.ScheduleBlockWhereInput[] = [];
+  if (input.taskId) similarity.push({ taskId: input.taskId });
+  if (input.routineId) similarity.push({ routineId: input.routineId });
+  if (input.goalId) similarity.push({ goalId: input.goalId });
+  for (const candidateQuery of queries) similarity.push({ title: { contains: candidateQuery, mode: "insensitive" } });
+  if (!similarity.length) return summarizeSimilarScheduleHistory([], timezone, input.limit);
+
+  const candidates = await getDb().scheduleBlock.findMany({
+    where: {
+      userId,
+      deletedAt: null,
+      startsAt: { gte: new Date(now.getTime() - input.days * 86_400_000), lt: now },
+      // “习惯”必须来自真实完成记录；PLANNED 只能说明曾计划，不能证明用户通常这样执行。
+      status: ScheduleBlockStatus.COMPLETED,
+      OR: similarity,
+    },
+    select: { id: true, title: true, startsAt: true, endsAt: true, status: true, goalId: true, taskId: true, routineId: true },
+    orderBy: { startsAt: "desc" },
+    take: 80,
+  });
+
+  const normalizedQueries = queries.map(normalizeActivityTitle);
+  const ranked = candidates
+    .map((block) => {
+      const normalizedTitle = normalizeActivityTitle(block.title);
+      let score = 0;
+      if (input.routineId && block.routineId === input.routineId) score += 8;
+      if (input.taskId && block.taskId === input.taskId) score += 6;
+      const exactMatch = normalizedQueries.some((candidateQuery) => normalizedTitle === candidateQuery);
+      const containsMatch = normalizedQueries.some((candidateQuery) => normalizedTitle.includes(candidateQuery) || candidateQuery.includes(normalizedTitle));
+      if (exactMatch) score += 10;
+      else if (input.matchMode !== "exact" && containsMatch) score += 4;
+      if (input.goalId && block.goalId === input.goalId) score += 1;
+      return { block, score };
+    })
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score || b.block.startsAt.getTime() - a.block.startsAt.getTime())
+    .slice(0, input.limit)
+    .map(({ block }) => block);
+
+  return summarizeSimilarScheduleHistory(ranked, timezone, input.limit);
+}
+
+function normalizeActivityTitle(value: string) {
+  return value.toLocaleLowerCase().replace(/[\s·•:：,，。.!！?？()（）《》“”"'_-]+/g, "");
+}
+
+function formatLocalDateTime(value: Date, timezone: string) {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(value).replace(" ", "T");
+}
 
 /**
  * 从请求体解析关联任务 ID 列表，taskIds 优先，否则回退到单个 taskId。
@@ -86,6 +228,20 @@ export async function aggregateLinkedTaskStatuses(tx: Prisma.TransactionClient, 
   for (const taskId of taskIds) await aggregateTaskStatus(tx, taskId);
 }
 
+/** Routine 动态展开允许的最大跨度（与 expandRoutineOccurrences 一致）。 */
+const MAX_ROUTINE_EXPAND_MS = 93 * 86400000;
+
+/**
+ * 当 bootstrap 窗口超过 Routine 展开上限时，截取靠近窗口末尾的 93 天用于展开。
+ * 物理日程块仍按完整 from/to 查询，避免历史投入漏算。
+ * @param from - 完整查询窗口起点
+ * @param to - 完整查询窗口终点
+ */
+export function clampRoutineExpandWindow(from: Date, to: Date): { from: Date; to: Date } {
+  if (to.getTime() - from.getTime() <= MAX_ROUTINE_EXPAND_MS) return { from, to };
+  return { from: new Date(to.getTime() - MAX_ROUTINE_EXPAND_MS), to };
+}
+
 /**
  * 列出指定时间窗口内的日程块。
  * @param userId - 用户 ID
@@ -94,15 +250,34 @@ export async function aggregateLinkedTaskStatuses(tx: Prisma.TransactionClient, 
  */
 export async function listScheduleBlocks(userId: string, from: Date, to: Date) {
   await ensureLocalUser();
+  const routineWindow = clampRoutineExpandWindow(from, to);
   const [blocks, occurrences] = await Promise.all([
     getDb().scheduleBlock.findMany({ where: { userId, deletedAt: null, startsAt: { lt: to }, endsAt: { gt: from }, NOT: { source: "routine" } }, include, orderBy: { startsAt: "asc" } }),
-    expandRoutineOccurrences(userId, from, to),
+    expandRoutineOccurrences(userId, routineWindow.from, routineWindow.to),
   ]);
   return [...blocks.map(serializeBlock), ...occurrences].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
 }
 
 /**
+ * 当请求未带 goalId 但关联了任务时，从主任务回填目标 ID，避免目标投入漏计。
+ * @param tx - Prisma 客户端或事务
+ * @param goalId - 请求中的目标 ID
+ * @param primaryTaskId - 主任务 ID
+ */
+async function resolveGoalIdForTasks(
+  tx: Prisma.TransactionClient | ReturnType<typeof getDb>,
+  goalId: string | null | undefined,
+  primaryTaskId: string | null,
+) {
+  if (goalId) return goalId;
+  if (!primaryTaskId) return goalId ?? null;
+  const task = await tx.task.findFirst({ where: { id: primaryTaskId, archivedAt: null }, select: { goalId: true } });
+  return task?.goalId ?? null;
+}
+
+/**
  * 手动创建日程块，若绑定 Task 则同步将 Task 状态改为 SCHEDULED。
+ * 未显式传入 goalId 时，会从主任务回填目标，避免目标投入漏计。
  * @param userId - 用户 ID
  * @param raw - 未校验的请求体
  */
@@ -110,7 +285,8 @@ export async function createScheduleBlock(userId: string, raw: unknown) {
   await ensureLocalUser();
   const input = createScheduleBlockSchema.parse(raw);
   const { taskIds, primaryTaskId } = resolveTaskIds(input);
-  await assertRelations(userId, input.goalId ?? undefined, primaryTaskId ?? undefined, input.routineId ?? undefined, taskIds);
+  const goalId = await resolveGoalIdForTasks(getDb(), input.goalId, primaryTaskId);
+  await assertRelations(userId, goalId ?? undefined, primaryTaskId ?? undefined, input.routineId ?? undefined, taskIds);
   const block = await getDb().$transaction(async (tx) => {
     const blockInput = { ...input };
     delete blockInput.taskIds;
@@ -118,6 +294,7 @@ export async function createScheduleBlock(userId: string, raw: unknown) {
       data: {
         userId,
         ...blockInput,
+        goalId,
         taskId: primaryTaskId,
         startsAt: new Date(input.startsAt),
         endsAt: new Date(input.endsAt),
@@ -142,15 +319,21 @@ export async function createScheduleBlock(userId: string, raw: unknown) {
 export async function updateScheduleBlock(userId: string, id: string, raw: unknown) {
   const input = updateScheduleBlockSchema.parse(raw) as ScheduleWriteInput;
   const resolved = input.taskIds !== undefined || input.taskId !== undefined ? resolveTaskIds(input) : null;
-  await assertRelations(userId, input.goalId ?? undefined, resolved?.primaryTaskId ?? input.taskId ?? undefined, input.routineId ?? undefined, resolved?.taskIds);
+  const primaryForGoal = resolved?.primaryTaskId ?? (input.taskId !== undefined ? input.taskId : null);
+  const derivedGoalId = input.goalId === undefined && primaryForGoal
+    ? await resolveGoalIdForTasks(getDb(), null, primaryForGoal)
+    : undefined;
+  const effectiveGoalId = input.goalId !== undefined ? input.goalId : derivedGoalId;
+  await assertRelations(userId, effectiveGoalId ?? input.goalId ?? undefined, resolved?.primaryTaskId ?? input.taskId ?? undefined, input.routineId ?? undefined, resolved?.taskIds);
   const current = await getDb().scheduleBlock.findFirst({ where: { id, userId, version: input.expectedVersion, deletedAt: null } });
   if (!current) throw new DomainError("VERSION_CONFLICT", "日程已经发生变化，请刷新后再保存。", 409);
   const moved = (input.startsAt && new Date(input.startsAt).getTime() !== current.startsAt.getTime()) || (input.endsAt && new Date(input.endsAt).getTime() !== current.endsAt.getTime());
+  const goalPatch = effectiveGoalId !== undefined ? { goalId: effectiveGoalId } : input.goalId !== undefined ? { goalId: input.goalId } : {};
   if (moved && input.moveInPlace) {
     await getDb().$transaction(async (tx) => {
       await tx.scheduleBlock.update({ where: { id }, data: {
         ...(input.title !== undefined && { title: input.title }),
-        ...(input.goalId !== undefined && { goalId: input.goalId }),
+        ...goalPatch,
         ...(resolved && { taskId: resolved.primaryTaskId }),
         ...(input.routineId !== undefined && { routineId: input.routineId }),
         startsAt: input.startsAt ? new Date(input.startsAt) : current.startsAt,
@@ -167,7 +350,7 @@ export async function updateScheduleBlock(userId: string, id: string, raw: unkno
     const next = await getDb().$transaction(async (tx) => {
       const created = await rescheduleScheduleBlockTx(tx, current, {
         title: input.title,
-        goalId: input.goalId,
+        goalId: effectiveGoalId !== undefined ? effectiveGoalId : input.goalId,
         taskId: resolved?.primaryTaskId ?? input.taskId,
         taskIds: resolved?.taskIds,
         routineId: input.routineId,
@@ -184,7 +367,7 @@ export async function updateScheduleBlock(userId: string, id: string, raw: unkno
   await getDb().$transaction(async (tx) => {
     await tx.scheduleBlock.update({ where: { id }, data: {
       ...(input.title !== undefined && { title: input.title }),
-      ...(input.goalId !== undefined && { goalId: input.goalId }),
+      ...goalPatch,
       ...(resolved && { taskId: resolved.primaryTaskId }),
       ...(input.routineId !== undefined && { routineId: input.routineId }),
       ...(input.flexibility !== undefined && { flexibility: input.flexibility }),

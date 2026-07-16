@@ -57,11 +57,19 @@ export function formatAgentTemporalAnchor(date: Date, timeZone: string) {
  * @param timeZone - 用户时区
  */
 export function parseAgentScheduleWindow(from: string, to: string, timeZone: string) {
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
+  const fromDate = parseAgentDateTime(from, timeZone);
+  const toDate = parseAgentDateTime(to, timeZone);
   if (!Number.isNaN(fromDate.getTime()) && !Number.isNaN(toDate.getTime()) && fromDate < toDate) {
     return { from: fromDate, to: toDate };
   }
   const today = zonedPeriod(new Date(), timeZone, "daily");
   return { from: today.start, to: today.end };
+}
+
+/** 带 offset 的时间按绝对时刻解析；无 offset 的 wall-clock 必须按用户时区解析。 */
+function parseAgentDateTime(value: string, timeZone: string) {
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) return new Date(value);
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?$/);
+  if (!match) return new Date(Number.NaN);
+  return zonedDateTimeToUtc(match[1]!, match[2]!, timeZone);
 }

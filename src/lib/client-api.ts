@@ -1,4 +1,5 @@
-import type { Goal, ScheduleItem } from "./demo-data";
+import { enrichGoalsWithScheduleStats, type Goal, type ScheduleItem } from "./demo-data";
+import { zonedDateKey, zonedPeriod } from "./timezone";
 
 type ApiEnvelope<T> = { data: T };
 
@@ -26,6 +27,53 @@ type ServerBlock = {
 };
 
 function goalColor(index: number): Goal["color"] { return (["violet", "sage", "coral"] as const)[index % 3]; }
+
+/**
+ * 将 API 返回的日程块转为客户端 ScheduleItem，统一时区下的日期与时间字段。
+ * @param block - 服务端日程块
+ * @param timezone - 用户 IANA 时区
+ */
+export function mapServerBlockToScheduleItem(block: ServerBlock, timezone: string): ScheduleItem {
+  const taskIds = block.taskIds?.length
+    ? block.taskIds
+    : block.linkedTasks?.map((link) => link.taskId)
+    ?? (block.taskId ? [block.taskId] : []);
+  return {
+    id: block.id,
+    title: block.title,
+    goalId: block.goalId ?? "",
+    taskId: taskIds[0] ?? block.taskId ?? undefined,
+    taskIds: taskIds.length ? taskIds : undefined,
+    routineId: block.routineId ?? undefined,
+    start: time(block.startsAt, timezone),
+    end: time(block.endsAt, timezone),
+    version: block.version,
+    date: dateKey(block.startsAt, timezone),
+    occurrenceDate: block.occurrenceDate,
+    source: block.source,
+    displayMode: block.displayMode,
+    changeReason: block.changeReason,
+    rescheduledFromId: block.rescheduledFromId,
+    kind: block.routineId ? "routine" as const : (!block.goalId && !taskIds.length && !block.routineId) ? "personal" as const : "task" as const,
+    status: block.status === "completed" ? "completed" as const : block.status === "in_progress" ? "in_progress" as const : block.status === "missed" ? "missed" as const : block.status === "rescheduled" ? "rescheduled" as const : block.status === "cancelled" ? "cancelled" as const : "planned" as const,
+    energy: "medium" as const,
+    feedback: block.executionRecord?.rhythmFeedback?.tags?.[0],
+    execution: block.executionRecord ? {
+      result: block.executionRecord.result,
+      actualMinutes: block.executionRecord.actualMinutes,
+      actualStartedAt: block.executionRecord.actualStartedAt,
+      actualEndedAt: block.executionRecord.actualEndedAt,
+      quality: block.executionRecord.quality,
+      obstacle: block.executionRecord.obstacle,
+      deviationReason: block.executionRecord.deviationReason,
+      nextAction: block.executionRecord.nextAction,
+      tags: block.executionRecord.rhythmFeedback?.tags ?? [],
+      note: block.executionRecord.rhythmFeedback?.note,
+      comfortable: block.executionRecord.rhythmFeedback?.comfortable,
+      timeFit: block.executionRecord.rhythmFeedback?.timeFit,
+    } : undefined,
+  };
+}
 
 export type RhythmSignalRecord = { id: string; type: string; statement: string; confidence?: number | null; evidence?: unknown };
 
@@ -98,28 +146,46 @@ export const homeInsightsApi = {
   respondMoment: (response: "accepted" | "ignored", applied = false) =>
     request<ApiHomeInsights>("/api/home/insights/moment", { method: "PATCH", body: JSON.stringify({ action: "respond", response, applied }) }),
 };
+/**
+ * 构造工作区 bootstrap 时间窗：向前覆盖一年历史（保证累计投入不漏算），向后覆盖到下月初。
+ * Routine 展开由服务端在超长窗口内自动截断到 93 天。
+ * @param now - 当前时刻
+ * @returns ISO 查询用的 from / to
+ */
+function workspaceBootstrapRange(now = new Date()) {
+  const from = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+  const to = new Date(now.getFullYear(), now.getMonth() + 1, 7);
+  return { from, to };
+}
+
+/**
+ * 计算用户时区下本周（周一至周日）的日期键集合。
+ * @param timezone - IANA 时区
+ * @param now - 当前时刻
+ */
+function currentWeekDateKeys(timezone: string, now = new Date()): Set<string> {
+  const week = zonedPeriod(now, timezone, "weekly");
+  const keys = new Set<string>();
+  for (let cursor = new Date(week.start); cursor < week.end; cursor = new Date(cursor.getTime() + 86400000)) {
+    keys.add(zonedDateKey(cursor, timezone));
+  }
+  return keys;
+}
+
+/**
+ * 加载工作区的目标、日程与节奏信号，并按用户时区转换日程日期和时间。
+ * @param timezone - 用于格式化日程的 IANA 时区
+ * @returns 客户端可直接消费的目标、日程与节奏信号
+ */
 export async function loadWorkspace(timezone = "Asia/Shanghai"): Promise<{ goals: Goal[]; schedule: ScheduleItem[]; rhythmSignals: RhythmSignalRecord[] }> {
-  const today = new Date();
-  const from = new Date(today.getFullYear(), today.getMonth(), 1);
-  const to = new Date(today.getFullYear(), today.getMonth() + 1, 7);
+  const { from, to } = workspaceBootstrapRange();
   const data = await request<{ goals: ServerGoal[]; schedule: ServerBlock[]; rhythmSignals?: RhythmSignalRecord[] }>(`/api/bootstrap?from=${from.toISOString()}&to=${to.toISOString()}`);
-  const goals = data.goals.map((goal, index) => ({
+  const baseGoals = data.goals.map((goal, index) => ({
     ...goal, color: goalColor(index), weeklyMinutes: 0, completedMinutes: 0,
     tasksDone: goal.tasks.filter((task) => task.status === "completed").length, tasksTotal: goal.tasks.length,
   }));
-  const schedule = data.schedule.map((block) => {
-    const taskIds = block.taskIds?.length
-      ? block.taskIds
-      : block.linkedTasks?.map((link) => link.taskId)
-      ?? (block.taskId ? [block.taskId] : []);
-    return {
-    id: block.id, title: block.title, goalId: block.goalId ?? "", taskId: taskIds[0] ?? block.taskId ?? undefined, taskIds: taskIds.length ? taskIds : undefined, routineId: block.routineId ?? undefined, start: time(block.startsAt, timezone), end: time(block.endsAt, timezone), version: block.version,
-    date: dateKey(block.startsAt, timezone), occurrenceDate: block.occurrenceDate, source: block.source, displayMode: block.displayMode, changeReason: block.changeReason, rescheduledFromId: block.rescheduledFromId,
-    kind: block.routineId ? "routine" as const : (!block.goalId && !taskIds.length && !block.routineId) ? "personal" as const : "task" as const,
-    status: block.status === "completed" ? "completed" as const : block.status === "missed" ? "missed" as const : block.status === "rescheduled" ? "rescheduled" as const : block.status === "cancelled" ? "cancelled" as const : "planned" as const,
-    energy: "medium" as const, feedback: block.executionRecord?.rhythmFeedback?.tags?.[0], execution: block.executionRecord ? { result: block.executionRecord.result, actualMinutes: block.executionRecord.actualMinutes, actualStartedAt: block.executionRecord.actualStartedAt, actualEndedAt: block.executionRecord.actualEndedAt, quality: block.executionRecord.quality, obstacle: block.executionRecord.obstacle, deviationReason: block.executionRecord.deviationReason, nextAction: block.executionRecord.nextAction, tags: block.executionRecord.rhythmFeedback?.tags ?? [], note: block.executionRecord.rhythmFeedback?.note, comfortable: block.executionRecord.rhythmFeedback?.comfortable, timeFit: block.executionRecord.rhythmFeedback?.timeFit } : undefined,
-  };
-  });
+  const schedule = data.schedule.map((block) => mapServerBlockToScheduleItem(block, timezone));
+  const goals = enrichGoalsWithScheduleStats(baseGoals, schedule, currentWeekDateKeys(timezone));
   return { goals, schedule, rhythmSignals: data.rhythmSignals ?? [] };
 }
 
@@ -187,14 +253,26 @@ export async function loadModelProviders() {
   return response.json() as Promise<{ data: ModelProviderInfo[]; defaultProvider: string }>;
 }
 
+export type AgentToolDetail = {
+  scope?: string;
+  result?: string;
+  judgment?: string;
+  nextAction?: string;
+  missingInformation?: string[];
+  inputSummary?: string;
+  inputPreview?: string;
+  rawInputJson?: string;
+  toolName?: string;
+};
+
 export type AgentStreamEvent =
   | { type: "status"; phase: "context" | "thinking" | "tool" | "writing"; message: string }
   | { type: "run_started"; runId: string }
-  | { type: "loop_step"; kind: "planning" | "verification" | "decision" | "final" | "recovery"; label: string; summary?: string; goalStatus?: string; nextAction?: string; detail?: { scope?: string; result?: string; judgment?: string; nextAction?: string; missingInformation?: string[] } }
+  | { type: "loop_step"; kind: "planning" | "verification" | "decision" | "final" | "recovery"; label: string; summary?: string; goalStatus?: string; nextAction?: string; detail?: AgentToolDetail }
   | { type: "text_delta"; text: string }
   | { type: "model_fallback"; from: string; to: string; reason: string }
-  | { type: "tool_started"; tool: string; label?: string }
-  | { type: "tool_completed"; tool: string; label?: string; summary?: string; detail?: { scope?: string; result?: string; judgment?: string; nextAction?: string }; result: { ok: boolean; message?: string } }
+  | { type: "tool_started"; tool: string; toolCallId?: string; label?: string; summary?: string; detail?: AgentToolDetail; input?: unknown }
+  | { type: "tool_completed"; tool: string; toolCallId?: string; label?: string; summary?: string; detail?: AgentToolDetail; result: { ok: boolean; message?: string } }
   | { type: "approval_required"; changeSetId: string }
   | { type: "run_completed"; text: string }
   | { type: "run_failed"; code: string; message: string }
@@ -208,7 +286,16 @@ export type AgentStreamEvent =
  * @param signal - 可选 AbortSignal，用于取消请求
  */
 export async function streamChatWithAgent(
-  input: { prompt: string; capability: string; provider: string; model?: string; messages: Array<{ role: "user" | "assistant"; content: string }>; business: Record<string, unknown>; page: { path: string; selectedEntityId?: string } },
+  input: {
+    prompt: string;
+    capability: string;
+    provider: string;
+    model?: string;
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+    conversationSummary?: string;
+    business: Record<string, unknown>;
+    page: { path: string; selectedEntityId?: string };
+  },
   onEvent: (event: AgentStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<{ text: string; provider: string; model: string; changeSet: AgentChangeSet | null }> {
@@ -270,7 +357,36 @@ export const changeSetApi = {
 };
 export const agentRunApi = {
   list: (limit = 30) => request<AgentRunHistory[]>(`/api/agent/runs?limit=${limit}`),
+  /**
+   * 取消指定 AgentRun，并拒绝其关联的待确认 ChangeSet。
+   * @param id - Run id
+   * @param reason - 可选原因
+   */
+  cancel: async (id: string, reason?: string) => {
+    const response = await fetch(`/api/agent/runs/${id}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    });
+    if (!response.ok && response.status !== 204) {
+      const body = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+      throw new Error(body?.error?.message ?? "取消当前处理失败。");
+    }
+  },
 };
+
+/**
+ * 请求异步对话摘要（best-effort）。
+ * @param input - session 校验字段与溢出消息
+ */
+export async function summarizeConversation(input: {
+  sessionId: string;
+  revision: number;
+  priorSummary?: string;
+  messages: Array<{ role: "user" | "assistant"; content: string; id?: string }>;
+}): Promise<{ sessionId: string; revision: number; summary: string; summarizedThroughMessageId?: string }> {
+  return request(`/api/agent/conversation/summarize`, { method: "POST", body: JSON.stringify(input) });
+}
 export type UserSettings = { timezone: string; dailyReviewTime: string; weeklyReviewDay: number; weeklyReviewTime: string; defaultModel: string };
 export const settingsApi = {
   get: () => request<UserSettings>("/api/settings"),

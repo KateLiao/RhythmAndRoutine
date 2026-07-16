@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { getDb } from "@/lib/db";
 import { zonedDateTimeToUtc, zonedParts } from "@/lib/timezone";
 import { DomainError } from "@/server/api-response";
@@ -38,8 +39,8 @@ export async function expandRoutineOccurrences(userId: string, from: Date, to: D
       const originalStart = zonedDateTimeToUtc(dateKey, routine.preferredStartTime ?? rule.time, timezone);
       const occurrenceDate = zonedDateTimeToUtc(dateKey, "00:00", timezone);
       const record = routine.executionRecords.find((entry) => entry.occurrenceDate.getTime() === occurrenceDate.getTime());
-      const startsAt = record?.rescheduledStartAt ?? originalStart;
-      const endsAt = record?.rescheduledEndAt ?? new Date(startsAt.getTime() + routine.durationMinutes * 60000);
+      const startsAt = record?.rescheduledStartAt ?? record?.plannedStartAt ?? originalStart;
+      const endsAt = record?.rescheduledEndAt ?? record?.plannedEndAt ?? new Date(startsAt.getTime() + routine.durationMinutes * 60000);
       const expired = endsAt < new Date();
       const status: ExpandedRoutineOccurrence["status"] = record?.status === "completed" ? "completed" : record?.status === "rescheduled" ? "rescheduled" : record?.status === "skipped" ? "cancelled" : record?.status === "missed" || expired ? "missed" : "planned";
       return {
@@ -66,10 +67,40 @@ export async function recordRoutineExecution(userId: string, raw: unknown) {
   const input = routineExecutionSchema.parse(raw);
   const routine = await getDb().routine.findFirst({ where: { id: input.routineId, archivedAt: null, goal: { userId } } });
   if (!routine) throw new DomainError("ROUTINE_NOT_FOUND", "没有找到这个 Routine。", 404);
+  const occurrenceDate = new Date(input.occurrenceDate);
+  const updateData: Prisma.RoutineExecutionRecordUpdateInput = {
+    status: input.status,
+    actualMinutes: input.actualMinutes,
+    feedbackTags: input.feedbackTags,
+    note: input.note,
+  };
+  if (input.rescheduledStartAt !== undefined) {
+    updateData.rescheduledStartAt = input.rescheduledStartAt ? new Date(input.rescheduledStartAt) : null;
+  }
+  if (input.rescheduledEndAt !== undefined) {
+    updateData.rescheduledEndAt = input.rescheduledEndAt ? new Date(input.rescheduledEndAt) : null;
+  }
+  if (input.plannedStartAt !== undefined) {
+    updateData.plannedStartAt = input.plannedStartAt ? new Date(input.plannedStartAt) : null;
+  }
+  if (input.plannedEndAt !== undefined) {
+    updateData.plannedEndAt = input.plannedEndAt ? new Date(input.plannedEndAt) : null;
+  }
   return getDb().routineExecutionRecord.upsert({
-    where: { routineId_occurrenceDate: { routineId: routine.id, occurrenceDate: new Date(input.occurrenceDate) } },
-    create: { routineId: routine.id, occurrenceDate: new Date(input.occurrenceDate), plannedStartAt: input.plannedStartAt ? new Date(input.plannedStartAt) : null, plannedEndAt: input.plannedEndAt ? new Date(input.plannedEndAt) : null, status: input.status, actualMinutes: input.actualMinutes, feedbackTags: input.feedbackTags, note: input.note, rescheduledStartAt: input.rescheduledStartAt ? new Date(input.rescheduledStartAt) : null, rescheduledEndAt: input.rescheduledEndAt ? new Date(input.rescheduledEndAt) : null },
-    update: { status: input.status, actualMinutes: input.actualMinutes, feedbackTags: input.feedbackTags, note: input.note, rescheduledStartAt: input.rescheduledStartAt ? new Date(input.rescheduledStartAt) : null, rescheduledEndAt: input.rescheduledEndAt ? new Date(input.rescheduledEndAt) : null },
+    where: { routineId_occurrenceDate: { routineId: routine.id, occurrenceDate } },
+    create: {
+      routineId: routine.id,
+      occurrenceDate,
+      plannedStartAt: input.plannedStartAt ? new Date(input.plannedStartAt) : null,
+      plannedEndAt: input.plannedEndAt ? new Date(input.plannedEndAt) : null,
+      status: input.status,
+      actualMinutes: input.actualMinutes,
+      feedbackTags: input.feedbackTags,
+      note: input.note,
+      rescheduledStartAt: input.rescheduledStartAt ? new Date(input.rescheduledStartAt) : null,
+      rescheduledEndAt: input.rescheduledEndAt ? new Date(input.rescheduledEndAt) : null,
+    },
+    update: updateData,
   });
 }
 

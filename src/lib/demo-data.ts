@@ -32,7 +32,7 @@ export type ScheduleItem = {
   start: string;
   end: string;
   kind: "task" | "routine" | "review" | "personal";
-  status: "completed" | "planned" | "missed" | "rescheduled" | "cancelled";
+  status: "completed" | "planned" | "in_progress" | "missed" | "rescheduled" | "cancelled";
   energy: "high" | "medium" | "low";
   feedback?: string;
   version?: number;
@@ -117,12 +117,28 @@ export function scheduleLinksTask(item: ScheduleItem, taskId: string): boolean {
 }
 
 /**
+ * 判断日程块是否属于指定目标：直接 goalId，或关联了该目标下任一任务。
+ * 个人日程（无 goal、无任务）不算；仅用标题匹配不算。
+ * @param item - 日程块
+ * @param goal - 目标（需带 tasks 列表以便按任务反查）
+ */
+export function scheduleBelongsToGoal(item: ScheduleItem, goal: Pick<Goal, "id" | "tasks">): boolean {
+  if (item.kind === "personal") return false;
+  if (item.goalId && item.goalId === goal.id) return true;
+  const taskIds = new Set((goal.tasks ?? []).map((task) => task.id));
+  if (!taskIds.size) return false;
+  return resolveScheduleTaskIds(item).some((taskId) => taskIds.has(taskId));
+}
+
+/**
  * 计算单个日程块的真实投入分钟数（优先实际耗时，否则用计划时长）。
  * @param item - 日程块
  */
 export function scheduleInvestedMinutes(item: ScheduleItem): number {
   if (item.status !== "completed") return 0;
-  return item.execution?.actualMinutes ?? durationMinutes(item.start, item.end);
+  const actual = item.execution?.actualMinutes;
+  if (actual != null && actual > 0) return actual;
+  return durationMinutes(item.start, item.end);
 }
 
 /**
@@ -134,6 +150,28 @@ export function taskInvestedMinutes(taskId: string, schedule: ScheduleItem[]): n
   return schedule
     .filter((item) => scheduleLinksTask(item, taskId))
     .reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
+}
+
+/**
+ * 用已加载日程回填目标的本周计划/真实投入分钟（个人日程不计入）。
+ * @param goals - 目标列表
+ * @param schedule - 日程块
+ * @param weekDateKeys - 本周日期键集合（YYYY-MM-DD）
+ */
+export function enrichGoalsWithScheduleStats(
+  goals: Goal[],
+  schedule: ScheduleItem[],
+  weekDateKeys: Set<string>,
+): Goal[] {
+  return goals.map((goal) => {
+    const goalBlocks = schedule.filter((item) => scheduleBelongsToGoal(item, goal) && item.status !== "cancelled" && item.status !== "rescheduled");
+    const weekBlocks = goalBlocks.filter((item) => weekDateKeys.has(item.date ?? ""));
+    const weeklyMinutes = weekBlocks.reduce((sum, item) => sum + durationMinutes(item.start, item.end), 0);
+    const completedMinutes = weekBlocks
+      .filter((item) => item.status === "completed")
+      .reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
+    return { ...goal, weeklyMinutes, completedMinutes };
+  });
 }
 
 /**

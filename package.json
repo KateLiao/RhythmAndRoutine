@@ -8,13 +8,19 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test:review-followups": "tsx --test src/server/services/review-followups.test.ts",
+    "test:schedule-investment": "tsx --test src/lib/schedule-investment.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
-    "db:setup": "npm run db:up && prisma migrate deploy && npm run db:seed"
+    "db:setup": "npm run db:up && prisma migrate deploy && npm run db:seed",
+    "repair:tasks:dry-run": "tsx scripts/repair-auto-completed-tasks.ts",
+    "repair:tasks:apply": "tsx scripts/repair-auto-completed-tasks.ts --apply",
+    "repair:schedule-links:dry-run": "tsx scripts/repair-schedule-task-links.ts",
+    "repair:schedule-links:apply": "tsx scripts/repair-schedule-task-links.ts --apply"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",

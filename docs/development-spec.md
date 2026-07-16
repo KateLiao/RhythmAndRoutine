@@ -110,7 +110,11 @@ draft | awaiting_confirmation | approved | rejected | applied | failed
 
 - Task 和 ScheduleBlock 可以由执行行为更新状态，但两者的“完成”含义不同：ScheduleBlock 完成只代表一次投入会话已结束，Task 完成必须由用户在完成标准区主动确认。
 - `aggregateTaskStatus`（`src/server/services/schedule.ts`）据关联 ScheduleBlock 状态聚合 Task 的非终态（`ready` / `scheduled` / `in_progress` / `blocked`），**禁止**写入 `completed`；已是 `completed` / `cancelled` / `archived` 的 Task 不会被块状态变化打回。`estimatedMinutes` 只作为「建议确认完成」信号（`isReadyForCompletionSuggest`：累计真实投入达到预计时长，或已无剩余计划块且存在完成投入）的参考阈值，不触发自动完成。
-- Task 由用户在完成标准区主动「确认完成」；服务端汇总关联 ScheduleBlock 的真实投入与 ExecutionRecord，调用 `review` capability 生成两段式总结（`executionSummary` + `overallEvaluation`），写入 `Task.completionRecord`（JSON），并将 `status` 置为 `completed`。AI 不可用时使用规则模板兜底。这是 Task 状态变为 `completed` 的唯一入口。
+- Task 由用户在完成标准区主动「确认完成」；服务端汇总关联 ScheduleBlock 的真实投入与 ExecutionRecord，调用 `review` capability 生成两段式总结（`executionSummary` + `overallEvaluation`），写入 `Task.completionRecord`（JSON），并将 `status` 置为 `completed`。AI 不可用时使用规则模板兜底。这是 Task 状态变为 `completed` 的唯一入口；通用 `PATCH /api/tasks/:id` 明确拒绝 `status=completed`，客户端必须调用 `POST /api/tasks/:id/complete`。
+- 历史自动聚合造成的误完成数据，只能修复 `status=completed AND completionRecord IS NULL AND archivedAt IS NULL` 的 Task；状态按主 `taskId` 与 `ScheduleBlockTask` 两类稳定 ID 关联的有效块重算，禁止按标题推断。修复脚本默认 dry-run，apply 前自动备份并使用版本条件更新；已有 `completionRecord` 的用户确认任务不得回退。
+- **真实投入口径**：仅 `status=completed` 的日程块计入；优先 `execution.actualMinutes`，缺失时回退计划时长；个人日程不计入目标/任务投入。目标投入 = 块上 `goalId` 命中，或经 `taskId` / `ScheduleBlockTask` 关联到该目标任务；任务投入 = 主 `taskId` 或 `ScheduleBlockTask` 命中。运行时禁止按标题推断关联。
+- **工作区加载**：`loadWorkspace` 拉取约一年物理日程历史用于累计投入与任务关联展示；Routine 动态展开仍限制在最近 93 天。目标列表的「本周」分钟由客户端按当前周日程回填，不得写死为 0。创建日程时若只传任务未传 `goalId`，服务端从主任务回填目标。
+- 存量 `ScheduleBlock.taskId` 缺少对应 `ScheduleBlockTask` 行时，可用 `npm run repair:schedule-links:dry-run|apply` 补齐关联（只新增、不删除）；脚本也可把阅读目标下标题含「深度工作」且无任务的已完成块一次性挂到对应读书任务。
 - Outcome 和 Milestone 只能由用户确认完成。
 - 删除优先采用软删除或归档；有关联执行历史的对象不可物理级联删除。
 - ScheduleBlock 改期时保留原计划与变更原因，避免丢失节奏分析依据。
@@ -135,7 +139,8 @@ draft | awaiting_confirmation | approved | rejected | applied | failed
 - Tailwind CSS 与 design tokens 实现 Soft Humanist 视觉系统。
 - Vercel 作为首选部署平台。
 - 定时任务触发日回顾和周回顾；执行逻辑必须幂等（幂等键 `${userId}:${type}:${periodStart}:${periodEnd}`），手动触发与定时触发共用同一服务（`generateReview`）。默认日回顾时间与周回顾时间均为用户时区 `23:00`（周回顾默认周日），用户可在设置中调整。回顾页在新周期生成前展示上一份回顾（「昨日回顾」/「上周回顾」语义）。
-- 日回顾聚焦当日执行与感受的「收尾评估」，周回顾聚焦节奏与目标校准；两者共用同一份增强输出 schema（`summary`/`findings`/`suggestions`/`source` 必填，`sessionHighlights`/`rhythmNotes`/`taskProgressNotes`/`routineNotes`/`goalCheckSuggestions`/`nextCycleSuggestions` 为可选区块），日回顾通常只填前者，周回顾按需填充后者。周回顾的 LLM 输入在服务端做确定性压缩（数字先算好、日回顾 findings 作先验、用户 note 与异常优先摘录、普通完成块只进聚合计数），不会把整周逐条日程原文传给模型。回顾正文中的「建议检查/建议确认」措辞不代表 Task、Milestone 或 Outcome 已完成，最终确认动作仍分别走 Task 完成、Milestone/Outcome 确认的既有接口。
+- 日回顾聚焦当日执行与感受的「收尾评估」，周回顾聚焦节奏与目标校准；日/周切换是 Hero 外的页面级导航，各自 Hero 只展示自身 `summary`。周回顾使用独立高密度布局承载任务进展、Routine 坚持、目标检查与「只由你确认」，日回顾保持轻量单主线。两者共用同一份增强输出 schema（`summary`/`findings`/`suggestions`/`source` 必填，`sessionHighlights`/`rhythmNotes`/`taskProgressNotes`/`routineNotes`/`goalCheckSuggestions`/`nextCycleSuggestions` 为可选区块），日回顾通常只填前者，周回顾按需填充后者。周回顾的 LLM 输入在服务端做确定性压缩（数字先算好、日回顾 findings 作先验、用户 note 与异常优先摘录、普通完成块只进聚合计数），不会把整周逐条日程原文传给模型。回顾正文中的「建议检查/建议确认」措辞不代表 Task、Milestone 或 Outcome 已完成，最终确认动作仍分别走 Task 完成、Milestone/Outcome 确认的既有接口。
+- 左侧「今天」badge 统计用户时区当天 `planned` / `in_progress` 日程块（含已过期但尚未记录结果的块），0 时隐藏；「回顾」仅在存在 `awaiting_confirmation` 回顾时显示「新」，进入页面不会清除，确认全部待确认回顾后自动消失。
 - 回顾报告是用户可见的自然中文产品文案，不是数据审计或调试日志；生成 prompt 与展示层都必须避免暴露数据库/API/JSON 字段名、英文枚举值、布尔值或代码式键值对。`tags`、`comfortable`、`timeFit`、`quality`、`status`、`result`、`smooth`、`good`、`great` 等内部参数只能作为证据读取，输出给用户时必须改写为「反馈较顺畅」「时间安排比较匹配」「质量反馈很好」等中文表达；报告称谓使用第二人称「你」，不得写「用户如何如何」。
 - 默认时区为 `Asia/Shanghai`，时间存储使用 UTC，展示与调度使用用户时区。
 

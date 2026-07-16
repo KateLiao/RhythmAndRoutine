@@ -8,6 +8,13 @@ import { inferScheduleBlockKind, isGoalScheduleEntity, isPersonalScheduleEntity 
 import { aggregateLinkedTaskStatuses, aggregateTaskStatus, rescheduleScheduleBlockTx } from "@/server/services/schedule";
 
 /**
+ * Run cancel 后重复拒绝同一草案属于幂等收敛，不应显示清理失败。
+ */
+export function isIdempotentChangeSetRejection(status: ChangeSetStatus, approved: boolean): boolean {
+  return !approved && status === ChangeSetStatus.REJECTED;
+}
+
+/**
  * 规范化 Agent 提交的变更操作：统一 entity 小写，并为 update 操作补全 before 快照（便于 UI 展示 diff）。
  * @param draft - 原始变更草案
  */
@@ -77,8 +84,13 @@ export async function listPendingChangeSets(userId: string) {
  * @param selectedOperationIndexes - 仅确认其中部分操作（可选，默认全部）
  */
 export async function decideChangeSet(userId: string, id: string, approved: boolean, selectedOperationIndexes?: number[]) {
-  const changeSet = await getDb().changeSet.findFirst({ where: { id, userId, status: ChangeSetStatus.AWAITING_CONFIRMATION } });
-  if (!changeSet) throw new DomainError("CHANGE_SET_NOT_FOUND", "这份变更草案已处理或不存在。", 404);
+  const changeSet = await getDb().changeSet.findFirst({ where: { id, userId } });
+  if (!changeSet) throw new DomainError("CHANGE_SET_NOT_FOUND", "这份变更草案不存在。", 404);
+  // Run cancel 会先拒绝关联草案；随后 Session 兜底 reject 同一 id 时应视为已收敛。
+  if (isIdempotentChangeSetRejection(changeSet.status, approved)) return changeSet;
+  if (changeSet.status !== ChangeSetStatus.AWAITING_CONFIRMATION) {
+    throw new DomainError("CHANGE_SET_ALREADY_DECIDED", "这份变更草案已经处理，不能重复审批。", 409);
+  }
   if (!approved) return getDb().$transaction(async (tx) => {
     const rejected = await tx.changeSet.update({ where: { id }, data: { status: ChangeSetStatus.REJECTED, decidedAt: new Date() } });
     if (changeSet.agentRunId) await tx.agentRun.update({ where: { id: changeSet.agentRunId }, data: { status: "CANCELLED", exitReason: "cancelled_by_user", goalStatus: "blocked", completedAt: new Date() } });

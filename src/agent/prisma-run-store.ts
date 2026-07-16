@@ -11,7 +11,9 @@ export class PrismaRunStore implements AgentRunStore {
     return getDb().agentRun.create({
       data: {
         userId: input.userId, capability: input.capability, triggerSource: TriggerSource.USER,
-        modelProvider: input.provider, modelId: input.model, status: AgentRunStatus.RUNNING, inputSummary: input.inputSummary?.slice(0, 2000), startedAt: new Date(),
+        modelProvider: input.provider, modelId: input.model, status: AgentRunStatus.RUNNING,
+        maxSteps: input.maxSteps, maxTokens: input.maxTokens,
+        inputSummary: input.inputSummary?.slice(0, 2000), startedAt: new Date(),
         contextItems: { create: manifest.flatMap((item) => typeof item.entityId === "string" ? [{ entityType: String(item.entityType ?? "unknown"), entityId: item.entityId, version: typeof item.version === "number" ? item.version : undefined, reason: String(item.reason ?? "Agent 上下文") }] : []) },
       },
       select: { id: true },

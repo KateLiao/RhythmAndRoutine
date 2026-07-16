@@ -5,11 +5,30 @@ import { AgentTool } from "./types";
 export type AgentDomainGateway = {
   readGoalContext(userId: string, goalId?: string): Promise<unknown>;
   readScheduleWindow(userId: string, from: string, to: string): Promise<unknown>;
+  readSimilarScheduleHistory(userId: string, input: { query?: string; goalId?: string; taskId?: string; routineId?: string; days: number; limit: number }): Promise<unknown>;
+  validateScheduleCandidates(userId: string, candidates: Array<{ label?: string; startsAt: string; endsAt: string }>): Promise<unknown>;
   readExecutionHistory(userId: string, days: number): Promise<unknown>;
   readRecentReviews(userId: string, limit: number): Promise<unknown>;
   readRhythmSignals(userId: string, limit: number): Promise<unknown>;
   createChangeSet(input: { userId: string; runId: string; idempotencyKey: string; draft: z.infer<typeof changeSetDraftSchema> }): Promise<{ id: string }>;
 };
+
+const similarScheduleHistorySchema = z.object({
+  query: z.string().trim().min(2).max(80).optional(),
+  goalId: z.string().optional(),
+  taskId: z.string().optional(),
+  routineId: z.string().optional(),
+  days: z.number().int().min(7).max(180).default(90),
+  limit: z.number().int().min(1).max(20).default(12),
+}).refine((input) => Boolean(input.query || input.goalId || input.taskId || input.routineId), {
+  message: "请至少提供活动关键词或关联目标/任务/Routine。",
+});
+
+const scheduleCandidateSchema = z.object({
+  label: z.string().trim().max(80).optional(),
+  startsAt: z.string().min(10),
+  endsAt: z.string().min(10),
+});
 
 export function createToolRegistry(gateway: AgentDomainGateway): Map<string, AgentTool> {
   const tools: AgentTool[] = [
@@ -22,6 +41,22 @@ export function createToolRegistry(gateway: AgentDomainGateway): Map<string, Age
       name: "read_schedule_window", description: "读取指定时间窗口内的内部日历。", risk: "read",
       inputSchema: z.object({ from: z.string(), to: z.string() }),
       execute: async (raw, context) => { const input = z.object({ from: z.string(), to: z.string() }).parse(raw); return { ok: true, data: await gateway.readScheduleWindow(context.userId, input.from, input.to) }; },
+    },
+    {
+      name: "read_similar_schedule_history", description: "查询过去相似活动通常被安排在哪些时段。仅在用户明确要求照往常、按习惯或参考过去安排时使用；返回的习惯时段仍需用 read_schedule_window 检查当前冲突。", risk: "read",
+      inputSchema: similarScheduleHistorySchema,
+      execute: async (raw, context) => ({
+        ok: true,
+        data: await gateway.readSimilarScheduleHistory(context.userId, similarScheduleHistorySchema.parse(raw)),
+      }),
+    },
+    {
+      name: "validate_schedule_candidates", description: "对准备推荐或写入的具体候选时段做最终冲突校验。提出任何具体时间建议前必须调用；返回 allAvailable=false 时必须调整候选后重试，不能声称该时段空闲。", risk: "read",
+      inputSchema: z.object({ candidates: z.array(scheduleCandidateSchema).min(1).max(20) }),
+      execute: async (raw, context) => {
+        const input = z.object({ candidates: z.array(scheduleCandidateSchema).min(1).max(20) }).parse(raw);
+        return { ok: true, data: await gateway.validateScheduleCandidates(context.userId, input.candidates) };
+      },
     },
     {
       name: "read_execution_history", description: "读取近期执行记录和 Rhythm Feedback。", risk: "read",
