@@ -19,10 +19,7 @@
 
 ### Main Changes
 
-- 将周视图表头与时间网格合并到同一滚动容器，消除纵向滚动条导致的列宽偏移。
-- 仅为“今天”显示整列淡底色，锚点日期改为轻量下划线标识。
-- 显式固定时间刻度列与七天日程网格的网格位置，防止纵向堆叠。
-- 补充日历布局与 Next.js dev/build 输出目录相关的前端规范及回归分析。
+(Add details)
 
 ### Git Commits
 
@@ -32,10 +29,7 @@
 
 ### Testing
 
-- [OK] `npm run lint`
-- [OK] `npm run typecheck`
-- [OK] `npm run build`
-- [OK] Chrome 周视图视觉验证：时间刻度、09:00 日程、七列边界及今日底色均正确
+- [OK] (Add test results)
 
 ### Status
 
@@ -158,7 +152,10 @@
 
 ### Main Changes
 
-(Add details)
+- 将周视图表头与时间网格合并到同一滚动容器，消除纵向滚动条导致的列宽偏移。
+- 仅为“今天”显示整列淡底色，锚点日期改为轻量下划线标识。
+- 显式固定时间刻度列与七天日程网格的网格位置，防止纵向堆叠。
+- 补充日历布局与 Next.js dev/build 输出目录相关的前端规范及回归分析。
 
 ### Git Commits
 
@@ -168,7 +165,10 @@
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm run typecheck`
+- [OK] `npm run build`
+- [OK] Chrome 周视图视觉验证：时间刻度、09:00 日程、七列边界及今日底色均正确
 
 ### Status
 
@@ -191,7 +191,9 @@
 
 ### Main Changes
 
-(Add details)
+- 将 `package.json`、`package-lock.json` 和 README 当前版本统一为 `0.3.1`。
+- 在 README 新增 v0.3.1 周视图补丁说明，并保留 v0.3.0 历史记录。
+- 创建 annotated tag `v0.3.1`，将发布提交与标签推送到 origin。
 
 ### Git Commits
 
@@ -201,7 +203,10 @@
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm run typecheck`
+- [OK] `npm run build`
+- [OK] 本地与 lockfile 三处版本均为 `0.3.1`
 
 ### Status
 
