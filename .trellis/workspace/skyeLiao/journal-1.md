@@ -177,3 +177,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: 发布 v0.3.1
+
+**Date**: 2026-07-16
+**Task**: 发布 v0.3.1
+**Branch**: `main`
+
+### Summary
+
+统一项目版本声明为 0.3.1，补充周视图修复发布说明，完成 lint、类型与生产构建验证，并将 main 与 annotated tag v0.3.1 推送到 origin。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f7c24a9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
