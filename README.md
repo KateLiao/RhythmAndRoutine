@@ -1,6 +1,6 @@
 # Rhythm & Routine
 
-AI Native 的个人目标推进系统（**v0.3.0**）。当前版本已经可以在没有数据库和 AI Key 的情况下运行，目标、Task、Routine、内部日程和执行反馈会保存在浏览器中；连接 PostgreSQL 后自动切换为数据库模式。
+AI Native 的个人目标推进系统（**v0.3.1**）。当前版本已经可以在没有数据库和 AI Key 的情况下运行，目标、Task、Routine、内部日程和执行反馈会保存在浏览器中；连接 PostgreSQL 后自动切换为数据库模式。
 
 ## 直接运行
 
@@ -40,6 +40,12 @@ npm run db:seed
 Agent Harness 已包含 Runtime、Context Builder、Tool Registry、目标驱动 Loop、Trace 和 ChangeSet 人工确认边界，并通过 OpenAI-compatible 适配器支持 Qwen、DeepSeek、MiniMax、OpenAI、Moonshot、智谱、OpenRouter、SiliconFlow 和自定义供应商。
 
 复制 `.env.example` 为 `.env`，填写所需供应商的 API Key，并通过 `DEFAULT_MODEL_PROVIDER` 选择默认供应商。模型名称和接口地址都可独立覆盖；没有任何 AI Key 时，目标、任务、Routine、日历、反馈与 Review 等手动功能仍可使用。
+
+## v0.3.1 更新
+
+- **周视图列对齐修复**：表头与时间网格共用同一个滚动坐标系，出现纵向滚动条或横向滚动时，时间刻度和七个日期列仍保持严格对齐。
+- **日期状态表达统一**：只有“今天”使用贯穿表头和网格的整列淡底色；当前锚点日期使用轻量下划线标识，避免相邻两列同时看似被选中。
+- **周视图布局回归修复**：显式固定时间刻度列与七天日程网格的网格位置，确保刻度在左、日程出现在对应时间行。
 
 ## v0.3.0 更新
 
