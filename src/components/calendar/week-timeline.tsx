@@ -77,61 +77,63 @@ export function WeekTimeline({
 
   return (
     <div className="week-timeline-module">
-      <div className="week-day-header-row sticky-calendar-head">
-        <div className="week-day-header-spacer" />
-        {days.map((key) => {
-          const date = dateFromKey(key);
-          return (
-            <header key={key} className={clsx("week-day-header", key === todayKey && "is-today", key === anchorDate && "is-selected")}>
-              <span>{WEEKDAY_LABELS[date.getDay() === 0 ? 6 : date.getDay() - 1]}</span>
-              <strong>{date.getDate()}</strong>
-            </header>
-          );
-        })}
-      </div>
-      <div className="hourly-timeline-shell calendar-scroll week-timeline-scroll" ref={shellRef}>
-        <div className="hour-label-column" style={{ height: `${timelineHeight}px` }}>
-          <span className="hour-timezone-label">{formatTimezoneAbbrev(timezone)}</span>
-          {labelMinutes.map((minute) => (
-            <span key={minute} style={{ top: `${((minute - startMinutes) / 60) * HOUR_HEIGHT}px` }}>{formatTimelineMinute(minute)}</span>
-          ))}
-        </div>
-        <div className="week-timeline-grid" data-week-start={weekStart} style={{ height: `${timelineHeight}px`, "--hour-height": `${HOUR_HEIGHT}px` } as React.CSSProperties}>
+      <div className="calendar-scroll week-timeline-scroll" ref={shellRef}>
+        <div className="week-day-header-row sticky-calendar-head">
+          <div className="week-day-header-spacer" />
           {days.map((key) => {
-            const dayItems = itemsByDay.get(key) ?? [];
-            const positioned = assignOverlapLayout(dayItems, startHour);
+            const date = dateFromKey(key);
             return (
-              <div key={key} className={clsx("week-day-lane", key === todayKey && "is-today", key === anchorDate && "is-selected")}>
-                {labelMinutes.slice(0, -1).map((minute) => (
-                  <div className="hour-gridline" key={minute} style={{ top: `${((minute - startMinutes) / 60) * HOUR_HEIGHT}px` }} />
-                ))}
-                {positioned.map((block) => (
-                  <CalendarEventBlock
-                    key={block.item.id}
-                    item={block.item}
-                    goals={goals}
-                    top={block.top}
-                    height={block.height}
-                    column={block.column}
-                    columnCount={block.columnCount}
-                    hiddenCount={block.hiddenCount}
-                    variant="week"
-                    selected={selectedBlockId === block.item.id}
-                    onSelect={onSelect}
-                    onFeedback={() => onSelect(block.item.id)}
-                    onComplete={() => onSelect(block.item.id)}
-                    onUpdateTime={onUpdateTime}
-                  />
-                ))}
-              </div>
+              <header key={key} className={clsx("week-day-header", key === todayKey && "is-today", key === anchorDate && "is-selected")}>
+                <span>{WEEKDAY_LABELS[date.getDay() === 0 ? 6 : date.getDay() - 1]}</span>
+                <strong>{date.getDate()}</strong>
+              </header>
             );
           })}
-          {timelineMounted && weekIncludesToday && currentTop >= 0 && currentTop <= timelineHeight && (
-            <div className="current-time-line week-current-time-line" style={{ top: `${currentTop}px` }}>
-              <span>{formatTimeInTimezone(now, timezone)}</span>
-              <i />
-            </div>
-          )}
+        </div>
+        <div className="week-timeline-body">
+          <div className="hour-label-column" style={{ height: `${timelineHeight}px` }}>
+            <span className="hour-timezone-label">{formatTimezoneAbbrev(timezone)}</span>
+            {labelMinutes.map((minute) => (
+              <span key={minute} style={{ top: `${((minute - startMinutes) / 60) * HOUR_HEIGHT}px` }}>{formatTimelineMinute(minute)}</span>
+            ))}
+          </div>
+          <div className="week-timeline-grid" data-week-start={weekStart} style={{ height: `${timelineHeight}px`, "--hour-height": `${HOUR_HEIGHT}px` } as React.CSSProperties}>
+            {days.map((key) => {
+              const dayItems = itemsByDay.get(key) ?? [];
+              const positioned = assignOverlapLayout(dayItems, startHour);
+              return (
+                <div key={key} className={clsx("week-day-lane", key === todayKey && "is-today")}>
+                  {labelMinutes.slice(0, -1).map((minute) => (
+                    <div className="hour-gridline" key={minute} style={{ top: `${((minute - startMinutes) / 60) * HOUR_HEIGHT}px` }} />
+                  ))}
+                  {positioned.map((block) => (
+                    <CalendarEventBlock
+                      key={block.item.id}
+                      item={block.item}
+                      goals={goals}
+                      top={block.top}
+                      height={block.height}
+                      column={block.column}
+                      columnCount={block.columnCount}
+                      hiddenCount={block.hiddenCount}
+                      variant="week"
+                      selected={selectedBlockId === block.item.id}
+                      onSelect={onSelect}
+                      onFeedback={() => onSelect(block.item.id)}
+                      onComplete={() => onSelect(block.item.id)}
+                      onUpdateTime={onUpdateTime}
+                    />
+                  ))}
+                </div>
+              );
+            })}
+            {timelineMounted && weekIncludesToday && currentTop >= 0 && currentTop <= timelineHeight && (
+              <div className="current-time-line week-current-time-line" style={{ top: `${currentTop}px` }}>
+                <span>{formatTimeInTimezone(now, timezone)}</span>
+                <i />
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

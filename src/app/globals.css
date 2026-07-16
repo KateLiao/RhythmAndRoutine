@@ -394,17 +394,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .calendar-status-icon.rescheduled { color: var(--gold); }
 .calendar-event-block.overflow-chip { z-index: 3; display: grid; place-items: center; border-style: dashed; color: var(--violet); background: rgba(247, 243, 251, .92); font-size: 9px; font-weight: 700; cursor: pointer; }
 .week-timeline-module, .day-timeline-module { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 0; border-radius: 0; }
+.week-timeline-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: #d7cfdf transparent; }
 .week-day-header-row { display: grid; grid-template-columns: 64px repeat(7, minmax(96px, 1fr)); gap: 0; min-width: 736px; border-bottom: 1px solid var(--line); background: rgba(255,253,251,.95); }
 .week-day-header-spacer { border-right: 1px solid var(--line); }
 .week-day-header { padding: 8px 4px; display: grid; justify-items: center; gap: 2px; border-right: 1px solid var(--line); font-size: 9px; color: var(--quiet); }
 .week-day-header strong { font-family: Georgia, serif; font-size: 15px; color: var(--ink); }
+.week-day-header.is-today { background: rgba(250, 247, 253, .65); }
 .week-day-header.is-today strong { color: var(--violet); }
-.week-day-header.is-selected { background: rgba(247, 243, 251, .9); }
+.week-day-header.is-selected strong { box-shadow: inset 0 -2px rgba(112, 90, 159, .55); }
 .sticky-calendar-head { position: sticky; top: 0; z-index: 5; }
-.week-timeline-grid { position: relative; flex: 1; display: grid; grid-template-columns: repeat(7, minmax(96px, 1fr)); min-width: 672px; }
+.week-timeline-body { display: grid; grid-template-columns: 64px minmax(672px, 1fr); align-items: start; min-width: 736px; }
+.week-timeline-body > .hour-label-column { grid-column: 1; grid-row: 1; }
+.week-timeline-grid { position: relative; grid-column: 2; grid-row: 1; display: grid; grid-template-columns: repeat(7, minmax(96px, 1fr)); min-width: 0; }
 .week-day-lane { position: relative; border-right: 1px solid var(--line); }
 .week-day-lane.is-today { background: rgba(250, 247, 253, .65); }
-.week-day-lane.is-selected { background: rgba(247, 243, 251, .5); }
 .week-current-time-line { z-index: 6; left: 0; right: 0; }
 .calendar-event-block.week { border-radius: 8px; box-shadow: none; }
 .calendar-event-block.week .calendar-event-body { padding: 2px 5px 2px 8px; align-items: center; }

@@ -54,6 +54,31 @@ Questions to answer:
 
 ## Common Mistakes
 
+### Keep aligned calendar headers and lanes in one scroll container
+
+When a calendar header and its time-grid lanes share column boundaries, render
+them inside the same element that owns both horizontal and vertical scrolling.
+Separate header and body scroll boxes calculate their available widths
+independently; once the body gains a vertical scrollbar, equal `1fr` columns
+drift farther out of alignment toward the right edge.
+
+```tsx
+// Avoid: the header uses the full module width while the body loses scrollbar width.
+<HeaderGrid />
+<ScrollableBodyGrid />
+
+// Use: both grids resolve their columns against one scroll viewport.
+<ScrollableCalendar>
+  <StickyHeaderGrid />
+  <BodyGrid />
+</ScrollableCalendar>
+```
+
+Give the header and body the same total minimum width (including the time-label
+column), explicitly place the label column and lane grid in the same grid row,
+and keep the header sticky inside that shared scroll container. This also
+guarantees that narrow-screen horizontal scrolling moves both grids together.
+
 ### Do not update a parent from a child state updater
 
 A functional state updater may run while React is rendering the component that
