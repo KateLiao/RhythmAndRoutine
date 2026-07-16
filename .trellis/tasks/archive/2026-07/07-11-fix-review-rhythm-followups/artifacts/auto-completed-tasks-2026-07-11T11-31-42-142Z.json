@@ -1,0 +1,62 @@
+{
+  "createdAt": "2026-07-11T11:31:42.259Z",
+  "candidateCount": 7,
+  "tasks": [
+    {
+      "id": "cmqmkgg7x0045m79k2cyur89p",
+      "title": "实现目标手动编辑流程",
+      "status": "COMPLETED",
+      "completedAt": "2026-06-21T09:45:01.600Z",
+      "completionRecord": null,
+      "version": 4
+    },
+    {
+      "id": "cmqmkgg84004am79kivowbmna",
+      "title": "实现规划建议生成逻辑",
+      "status": "COMPLETED",
+      "completedAt": "2026-07-09T03:33:51.909Z",
+      "completionRecord": null,
+      "version": 4
+    },
+    {
+      "id": "cmqm658pf001xts9k3c0xbyp5",
+      "title": "每日自由对话练习",
+      "status": "COMPLETED",
+      "completedAt": "2026-07-09T06:41:22.454Z",
+      "completionRecord": null,
+      "version": 7
+    },
+    {
+      "id": "cmqmkgg8c004hm79k148zt4la",
+      "title": "修复 MVP 阻塞问题",
+      "status": "COMPLETED",
+      "completedAt": "2026-07-09T08:14:38.791Z",
+      "completionRecord": null,
+      "version": 6
+    },
+    {
+      "id": "cmrdbp3ov000c4vjf4rdjovt7",
+      "title": "完成首页功能的优化",
+      "status": "COMPLETED",
+      "completedAt": "2026-07-10T03:32:52.193Z",
+      "completionRecord": null,
+      "version": 8
+    },
+    {
+      "id": "cmregklyv001tqajf16mkrcqp",
+      "title": "学习 Typescript",
+      "status": "COMPLETED",
+      "completedAt": "2026-07-10T07:39:54.020Z",
+      "completionRecord": null,
+      "version": 3
+    },
+    {
+      "id": "cmrdn1oav00089gjflvy7hmfz",
+      "title": "完成温柔的弹唱",
+      "status": "COMPLETED",
+      "completedAt": "2026-07-11T08:29:32.276Z",
+      "completionRecord": null,
+      "version": 8
+    }
+  ]
+}

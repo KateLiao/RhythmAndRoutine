@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "检查导航、回顾页响应式与前端代码质量是否符合项目规范。"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "检查 Task 状态在 API、服务、数据库与 UI 各层的一致性及数据修复安全性。"}
