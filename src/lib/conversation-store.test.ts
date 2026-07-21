@@ -4,11 +4,15 @@ import {
   appendMessages,
   applyConversationSummary,
   clearContext,
+  getActiveParentRunId,
+  getActivePendingChangeSetId,
   getContextMessages,
   getSession,
   hasUndoableClear,
   startNewSession,
   syncContextScope,
+  trackRunStarted,
+  trackPendingChangeSet,
   undoClearContext,
   type StoredMessage,
 } from "@/lib/conversation-store";
@@ -73,11 +77,17 @@ describe("conversation-store v2", () => {
 
   it("allows undo before the next send and restores the previous context", () => {
     appendMessages([message("m1", "user", "保留我")]);
+    trackRunStarted("run-a");
+    trackPendingChangeSet("change-a");
     clearContext();
 
     assert.equal(hasUndoableClear(), true);
+    assert.equal(getActiveParentRunId(), undefined);
+    assert.equal(getActivePendingChangeSetId(), undefined);
     assert.equal(undoClearContext(), true);
     assert.equal(hasUndoableClear(), false);
+    assert.equal(getActiveParentRunId(), "run-a");
+    assert.equal(getActivePendingChangeSetId(), "change-a");
     assert.deepEqual(getContextMessages(), [{ role: "user", content: "保留我" }]);
   });
 
@@ -93,6 +103,24 @@ describe("conversation-store v2", () => {
     const goalChange = syncContextScope({ view: "calendar", goalId: "goal-b" }, "目标 B");
     assert.equal(goalChange.cleared, true);
     assert.match(getSession().messages.at(-1)?.text ?? "", /目标 B/);
+  });
+
+  it("keeps an old proposal visible but stops auto-injecting it after leaving goal context", () => {
+    syncContextScope({ view: "goal-detail", goalId: "goal-a" }, "目标 A");
+    trackRunStarted("run-a");
+    trackPendingChangeSet("change-a");
+    assert.equal(getActiveParentRunId(), "run-a");
+    assert.equal(getActivePendingChangeSetId(), "change-a");
+
+    const result = syncContextScope({ view: "today", goalId: null });
+
+    assert.equal(result.cleared, true);
+    assert.equal(getActiveParentRunId(), undefined);
+    assert.equal(getActivePendingChangeSetId(), undefined);
+    assert.deepEqual(getSession().runIds, ["run-a"]);
+    assert.deepEqual(getSession().pendingChangeSetIds, ["change-a"]);
+    assert.match(getSession().messages.at(-1)?.text ?? "", /已离开目标上下文/);
+    assert.equal(getSession().messages.at(-1)?.boundary?.undoable, false);
   });
 
   it("rejects stale summary writes after the revision changes", () => {

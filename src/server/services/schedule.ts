@@ -2,11 +2,18 @@ import type { Prisma } from "@/generated/prisma/client";
 import { ScheduleBlockStatus, TaskStatus } from "@/generated/prisma/enums";
 import { getDb } from "@/lib/db";
 import { DomainError } from "@/server/api-response";
+import { evaluateGoalAchievementsBestEffort } from "@/server/services/goal-execution";
+import { evaluateMilestoneSuggestionsBestEffort } from "@/server/services/milestone-suggestions";
 import { ensureLocalUser } from "@/server/auth";
 import { createScheduleBlockSchema, executionFeedbackSchema, updateScheduleBlockSchema } from "@/server/validation";
 import { inferScheduleBlockKind } from "@/lib/schedule-block-kind";
 import { formatClock, timeMinutesInTimezone } from "@/lib/calendar/time";
 import { expandRoutineOccurrences } from "@/server/services/routines";
+import {
+  EXECUTION_FEEDBACK_VERSION,
+  executionResultHasInvestment,
+  isExecutionFeedbackV2Result,
+} from "@/domain/execution-feedback";
 
 const statusMap = { planned: ScheduleBlockStatus.PLANNED, in_progress: ScheduleBlockStatus.IN_PROGRESS, completed: ScheduleBlockStatus.COMPLETED, missed: ScheduleBlockStatus.MISSED, rescheduled: ScheduleBlockStatus.RESCHEDULED, cancelled: ScheduleBlockStatus.CANCELLED } as const;
 
@@ -423,21 +430,22 @@ export async function deleteScheduleBlock(userId: string, id: string, expectedVe
  */
 export async function upsertExecutionFeedback(userId: string, scheduleBlockId: string, raw: unknown) {
   const input = executionFeedbackSchema.parse(raw);
-  const block = await getDb().scheduleBlock.findFirst({ where: { id: scheduleBlockId, userId, deletedAt: null }, select: { id: true, userId: true, taskId: true, version: true, title: true, goalId: true, routineId: true, endsAt: true, startsAt: true, flexibility: true } });
+  const block = await getDb().scheduleBlock.findFirst({ where: { id: scheduleBlockId, userId, deletedAt: null }, select: { id: true, userId: true, taskId: true, version: true, title: true, goalId: true, routineId: true, endsAt: true, startsAt: true, flexibility: true, task: { select: { goalId: true } }, routine: { select: { goalId: true } }, linkedTasks: { select: { task: { select: { goalId: true } } } } } });
   if (!block) throw new DomainError("SCHEDULE_BLOCK_NOT_FOUND", "没有找到这个日程块。", 404);
 
-  const status = input.result === "completed" ? ScheduleBlockStatus.COMPLETED : input.result === "rescheduled" ? ScheduleBlockStatus.RESCHEDULED : ScheduleBlockStatus.MISSED;
+  const status = executionResultHasInvestment(input.result) ? ScheduleBlockStatus.COMPLETED : input.result === "rescheduled" ? ScheduleBlockStatus.RESCHEDULED : ScheduleBlockStatus.MISSED;
+  const isV2 = input.feedbackVersion === EXECUTION_FEEDBACK_VERSION || isExecutionFeedbackV2Result(input.result);
 
   await getDb().$transaction(async (tx) => {
     const record = await tx.executionRecord.upsert({
       where: { scheduleBlockId },
-      create: { scheduleBlockId, result: input.result, actualMinutes: input.actualMinutes, deviationReason: input.deviationReason, actualStartedAt: input.actualStartedAt ? new Date(input.actualStartedAt) : undefined, actualEndedAt: input.actualEndedAt ? new Date(input.actualEndedAt) : undefined, quality: input.quality, obstacle: input.obstacle, nextAction: input.nextAction },
-      update: { result: input.result, actualMinutes: input.actualMinutes, deviationReason: input.deviationReason, actualStartedAt: input.actualStartedAt ? new Date(input.actualStartedAt) : undefined, actualEndedAt: input.actualEndedAt ? new Date(input.actualEndedAt) : undefined, quality: input.quality, obstacle: input.obstacle, nextAction: input.nextAction },
+      create: { scheduleBlockId, result: input.result, actualMinutes: input.actualMinutes, deviationReason: input.deviationReason, actualStartedAt: input.actualStartedAt ? new Date(input.actualStartedAt) : undefined, actualEndedAt: input.actualEndedAt ? new Date(input.actualEndedAt) : undefined, quality: input.quality, obstacle: input.obstacle, nextAction: input.nextAction, feedbackVersion: isV2 ? EXECUTION_FEEDBACK_VERSION : 1 },
+      update: { result: input.result, actualMinutes: input.actualMinutes, deviationReason: input.deviationReason, actualStartedAt: input.actualStartedAt ? new Date(input.actualStartedAt) : undefined, actualEndedAt: input.actualEndedAt ? new Date(input.actualEndedAt) : undefined, quality: input.quality, obstacle: input.obstacle, nextAction: input.nextAction, ...(isV2 ? { feedbackVersion: EXECUTION_FEEDBACK_VERSION } : {}) },
     });
     await tx.rhythmFeedback.upsert({
       where: { executionRecordId: record.id },
-      create: { executionRecordId: record.id, tags: input.tags, note: input.note, comfortable: input.comfortable, timeFit: input.timeFit },
-      update: { tags: input.tags, note: input.note, comfortable: input.comfortable, timeFit: input.timeFit },
+      create: { executionRecordId: record.id, tags: input.tags ?? [], note: input.note, comfortable: input.comfortable, timeFit: input.timeFit, focusState: input.focusState },
+      update: { ...(input.tags !== undefined && { tags: input.tags }), note: input.note, comfortable: input.comfortable, timeFit: input.timeFit, focusState: input.focusState },
     });
     await tx.scheduleBlock.update({ where: { id: scheduleBlockId }, data: { status, version: { increment: 1 } } });
 
@@ -454,6 +462,11 @@ export async function upsertExecutionFeedback(userId: string, scheduleBlockId: s
 
     await aggregateLinkedTaskStatuses(tx, scheduleBlockId, block.taskId);
   });
+  const affectedGoalIds = [...new Set([block.goalId, block.task?.goalId, block.routine?.goalId, ...block.linkedTasks.map((link) => link.task.goalId)].filter((goalId): goalId is string => Boolean(goalId)))];
+  if (executionResultHasInvestment(input.result) && affectedGoalIds.length) await Promise.all([
+    evaluateGoalAchievementsBestEffort(affectedGoalIds),
+    evaluateMilestoneSuggestionsBestEffort(affectedGoalIds),
+  ]);
   return getBlock(userId, scheduleBlockId);
 }
 

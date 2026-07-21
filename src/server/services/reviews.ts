@@ -13,6 +13,7 @@ import {
   resolveMostRecentDueReviewPeriods,
   type ReviewScheduleSettings,
 } from "@/server/services/review-schedule";
+import { resolveExecutionFocusState, type ExecutionFocusState } from "@/domain/execution-feedback";
 
 /** 写入 prompt 的产品约束：结束后才记录执行；不得捏造；不得替用户宣布完成。 */
 const PRODUCT_CONSTRAINTS = "用户只在日程结束后记录执行结果；status=planned 且计划时间已过，不代表用户没有开始，只是还没回来记录。禁止编造未在数据中出现的内容。必须区分「事实」与「你的判断」。最终输出是直接写给当前用户看的产品报告，不是数据审计或调试日志：必须使用「你」作为称谓，禁止使用「用户」「该用户」「这位用户」等第三人称表述；禁止暴露任何数据库/API/JSON 字段名、英文枚举值、布尔值、代码式键值对或带字段名的括号说明，例如 tags、comfortable、timeFit、quality、status、result、smooth、good、great、comfortable: true、时间适配度（timeFit）='good' 都不能出现在用户可见字段中。所有内部参数只用于理解证据，输出时必须改写为自然中文，例如“反馈较顺畅”“时间安排比较匹配”“质量反馈很好”“执行中有阻力”。不得在任何字段中宣布 Task、Milestone 或 Outcome 已经完成——最多只能说「建议检查」或「建议确认」，最终是否完成由用户自己确认。";
@@ -30,11 +31,12 @@ type PeriodBlock = {
   executionRecord: {
     actualMinutes: number | null;
     result: string;
+    feedbackVersion: number;
     quality: string | null;
     obstacle: string | null;
     deviationReason: string | null;
     nextAction: string | null;
-    rhythmFeedback: { tags: string[]; note: string | null; comfortable: boolean | null; timeFit: string | null } | null;
+    rhythmFeedback: { tags: string[]; note: string | null; comfortable: boolean | null; timeFit: string | null; focusState: string | null } | null;
   } | null;
   linkedTasks: Array<{ taskId: string }>;
   task: { id: string; title: string } | null;
@@ -42,7 +44,7 @@ type PeriodBlock = {
   goal: { id: string; title: string } | null;
 };
 
-type PeriodMetrics = {
+export type PeriodMetrics = {
   total: number;
   completed: number;
   missed: number;
@@ -51,9 +53,12 @@ type PeriodMetrics = {
   investedMinutes: number;
   smoothCount: number;
   resistanceCount: number;
+  focusCounts: Record<ExecutionFocusState, number>;
 };
 
-const RESISTANCE_TAGS = new Set(["resistant", "interrupted", "barely_completed"]);
+function emptyFocusCounts(): Record<ExecutionFocusState, number> {
+  return { deep_focus: 0, steady_focus: 0, under_challenged: 0, overloaded: 0, fragmented: 0 };
+}
 
 export type ReviewSyncResult = {
   generated: Array<"daily" | "weekly">;
@@ -228,7 +233,7 @@ export async function confirmReview(userId: string, id: string, confirmed: boole
  * @param periodEnd - 周期结束（UTC）
  */
 async function fetchPeriodBlocks(userId: string, periodStart: Date, periodEnd: Date): Promise<PeriodBlock[]> {
-  return getDb().scheduleBlock.findMany({
+  const blocks = await getDb().scheduleBlock.findMany({
     where: { userId, deletedAt: null, startsAt: { gte: periodStart, lt: periodEnd } },
     include: {
       executionRecord: { include: { rhythmFeedback: true } },
@@ -239,6 +244,33 @@ async function fetchPeriodBlocks(userId: string, periodStart: Date, periodEnd: D
     },
     orderBy: { startsAt: "asc" },
   });
+  if (!blocks.length) return blocks;
+
+  // 后继块可能已经被改到周期外，甚至之后被软删除；只要改期链已经产生后继，
+  // 原块就不再代表日历上的最终安排，因此仍须从原周期回顾中排除。
+  const successorLinks = await getDb().scheduleBlock.findMany({
+    where: { userId, rescheduledFromId: { in: blocks.map((block) => block.id) } },
+    select: { rescheduledFromId: true },
+  });
+  return excludeSupersededPeriodBlocks(blocks, successorLinks);
+}
+
+/**
+ * 从周期候选块中排除已有改期后继的历史节点，只保留改期链叶子及普通日程。
+ * @param periodBlocks - 按自身 startsAt 落入回顾周期的候选块
+ * @param successorLinks - 用户全部后继块中指向候选块的改期引用
+ * @returns 可进入回顾 facts 的最终日程集合
+ */
+export function excludeSupersededPeriodBlocks<T extends { id: string }>(
+  periodBlocks: T[],
+  successorLinks: Array<{ rescheduledFromId: string | null }>,
+): T[] {
+  const supersededIds = new Set(
+    successorLinks
+      .map((block) => block.rescheduledFromId)
+      .filter((id): id is string => id !== null),
+  );
+  return periodBlocks.filter((block) => !supersededIds.has(block.id));
 }
 
 /**
@@ -252,10 +284,15 @@ function computePeriodMetrics(blocks: PeriodBlock[]): PeriodMetrics {
   const rescheduled = blocks.filter((block) => block.status === "RESCHEDULED");
   const cancelled = blocks.filter((block) => block.status === "CANCELLED");
   const investedMinutes = completed.reduce((sum, block) => sum + blockInvestedMinutes(block), 0);
-  const feedbackTags = blocks.flatMap((block) => block.executionRecord?.rhythmFeedback?.tags ?? []);
-  const smoothCount = feedbackTags.filter((tag) => tag === "smooth").length;
-  const resistanceCount = feedbackTags.filter((tag) => RESISTANCE_TAGS.has(tag)).length;
-  return { total: blocks.length, completed: completed.length, missed: missed.length, rescheduled: rescheduled.length, cancelled: cancelled.length, investedMinutes, smoothCount, resistanceCount };
+  const focusCounts = emptyFocusCounts();
+  for (const block of blocks) {
+    const feedback = block.executionRecord?.rhythmFeedback;
+    const focus = resolveExecutionFocusState(block.executionRecord?.feedbackVersion, feedback?.focusState, feedback?.tags ?? []);
+    if (focus) focusCounts[focus] += 1;
+  }
+  const smoothCount = focusCounts.deep_focus + focusCounts.steady_focus;
+  const resistanceCount = focusCounts.overloaded + focusCounts.fragmented;
+  return { total: blocks.length, completed: completed.length, missed: missed.length, rescheduled: rescheduled.length, cancelled: cancelled.length, investedMinutes, smoothCount, resistanceCount, focusCounts };
 }
 
 /**
@@ -288,6 +325,7 @@ type DailyFacts = {
   todayBlocks: Array<{
     startsAt: string; endsAt: string; kind: string; title: string; status: string;
     plannedMinutes: number; actualMinutes: number | null; result: string | null;
+    feedbackVersion: number | null; focusState: ExecutionFocusState | undefined;
     tags: string[]; note: string | undefined; comfortable: boolean | undefined; timeFit: string | undefined;
     quality: string | undefined; obstacle: string | undefined; deviationReason: string | undefined; nextAction: string | undefined;
   }>;
@@ -306,24 +344,31 @@ type DailyFacts = {
  */
 function assembleDailyFacts(blocks: PeriodBlock[], periodStart: Date, periodEnd: Date, metrics: PeriodMetrics, activeRhythmSignals: Array<{ type: string; statement: string; confidence?: number }>): DailyFacts {
   const now = new Date();
-  const todayBlocks = blocks.map((block) => ({
-    startsAt: block.startsAt.toISOString(),
-    endsAt: block.endsAt.toISOString(),
-    kind: block.routineId ? "routine" : block.taskId ? "task" : "personal",
-    title: block.task?.title ?? block.routine?.title ?? block.title,
-    status: block.status.toLowerCase(),
-    plannedMinutes: Math.max(0, Math.round((block.endsAt.getTime() - block.startsAt.getTime()) / 60000)),
-    actualMinutes: block.executionRecord?.actualMinutes ?? null,
-    result: block.executionRecord?.result ?? null,
-    tags: block.executionRecord?.rhythmFeedback?.tags ?? [],
-    note: block.executionRecord?.rhythmFeedback?.note ?? undefined,
-    comfortable: block.executionRecord?.rhythmFeedback?.comfortable ?? undefined,
-    timeFit: block.executionRecord?.rhythmFeedback?.timeFit ?? undefined,
-    quality: block.executionRecord?.quality ?? undefined,
-    obstacle: block.executionRecord?.obstacle ?? undefined,
-    deviationReason: block.executionRecord?.deviationReason ?? undefined,
-    nextAction: block.executionRecord?.nextAction ?? undefined,
-  }));
+  const todayBlocks = blocks.map((block) => {
+    const record = block.executionRecord;
+    const feedback = record?.rhythmFeedback;
+    const isV2 = (record?.feedbackVersion ?? 1) >= 2;
+    return {
+      startsAt: block.startsAt.toISOString(),
+      endsAt: block.endsAt.toISOString(),
+      kind: block.routineId ? "routine" : block.taskId ? "task" : "personal",
+      title: block.task?.title ?? block.routine?.title ?? block.title,
+      status: block.status.toLowerCase(),
+      plannedMinutes: Math.max(0, Math.round((block.endsAt.getTime() - block.startsAt.getTime()) / 60000)),
+      actualMinutes: record?.actualMinutes ?? null,
+      result: record?.result ?? null,
+      feedbackVersion: record?.feedbackVersion ?? null,
+      focusState: resolveExecutionFocusState(record?.feedbackVersion, feedback?.focusState, feedback?.tags ?? []),
+      tags: feedback?.tags ?? [],
+      note: feedback?.note ?? undefined,
+      comfortable: isV2 ? undefined : feedback?.comfortable ?? undefined,
+      timeFit: isV2 ? undefined : feedback?.timeFit ?? undefined,
+      quality: record?.quality ?? undefined,
+      obstacle: isV2 ? undefined : record?.obstacle ?? undefined,
+      deviationReason: isV2 ? undefined : record?.deviationReason ?? undefined,
+      nextAction: isV2 ? undefined : record?.nextAction ?? undefined,
+    };
+  });
   const pendingFeedbackCount = blocks.filter((block) => block.status === "PLANNED" && block.endsAt < now).length;
   return {
     period: { type: "daily", periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString() },
@@ -448,9 +493,10 @@ function buildDailyAggregation(blocks: PeriodBlock[], periodStart: Date, periodE
       row.done += 1;
       row.investedMinutes += blockInvestedMinutes(block);
     }
-    const tags = block.executionRecord?.rhythmFeedback?.tags ?? [];
-    if (tags.includes("smooth")) row.smooth += 1;
-    if (tags.some((tag) => RESISTANCE_TAGS.has(tag))) row.resistance += 1;
+    const feedback = block.executionRecord?.rhythmFeedback;
+    const focus = resolveExecutionFocusState(block.executionRecord?.feedbackVersion, feedback?.focusState, feedback?.tags ?? []);
+    if (focus === "deep_focus" || focus === "steady_focus") row.smooth += 1;
+    if (focus === "overloaded" || focus === "fragmented") row.resistance += 1;
     rows.set(key, row);
   }
   return Array.from(rows.entries()).map(([date, row]) => ({ date, ...row }));
@@ -464,10 +510,13 @@ function buildDailyAggregation(blocks: PeriodBlock[], periodStart: Date, periodE
 function rankBlocksForWeeklyExcerpt(blocks: PeriodBlock[]) {
   return blocks
     .map((block) => {
-      const tags = block.executionRecord?.rhythmFeedback?.tags ?? [];
-      const note = block.executionRecord?.rhythmFeedback?.note ?? undefined;
-      const hasObstacleOnException = (block.status === "MISSED" || block.status === "RESCHEDULED") && Boolean(block.executionRecord?.obstacle || block.executionRecord?.deviationReason);
-      const hasResistanceTag = tags.some((tag) => RESISTANCE_TAGS.has(tag));
+      const feedback = block.executionRecord?.rhythmFeedback;
+      const tags = feedback?.tags ?? [];
+      const note = feedback?.note ?? undefined;
+      const isV2 = (block.executionRecord?.feedbackVersion ?? 1) >= 2;
+      const hasObstacleOnException = !isV2 && (block.status === "MISSED" || block.status === "RESCHEDULED") && Boolean(block.executionRecord?.obstacle || block.executionRecord?.deviationReason);
+      const focus = resolveExecutionFocusState(block.executionRecord?.feedbackVersion, feedback?.focusState, tags);
+      const hasResistanceTag = focus === "overloaded" || focus === "fragmented";
       const score = note ? 100 : hasObstacleOnException ? 50 : hasResistanceTag ? 30 : 1;
       const excerpt: BlockExcerpt = {
         title: block.task?.title ?? block.routine?.title ?? block.title,
@@ -546,7 +595,10 @@ async function buildRoutineStability(userId: string, periodStart: Date, periodEn
     if (occurrence.status === "completed") entry.completed += 1;
     else if (occurrence.status === "missed") entry.missed += 1;
     else if (occurrence.status === "cancelled") entry.skipped += 1;
-    if (occurrence.executionRecord?.rhythmFeedback?.tags) entry.tags.push(...occurrence.executionRecord.rhythmFeedback.tags);
+    const feedback = occurrence.executionRecord?.rhythmFeedback;
+    const focusState = resolveExecutionFocusState(occurrence.executionRecord?.feedbackVersion, feedback?.focusState, feedback?.tags ?? []);
+    if (focusState) entry.tags.push(focusState);
+    else if (feedback?.tags) entry.tags.push(...feedback.tags);
     byRoutine.set(occurrence.routineId, entry);
   }
   return Array.from(byRoutine.entries())
@@ -563,8 +615,14 @@ function buildScheduleDeviation(blocks: PeriodBlock[]): ScheduleDeviationFact {
   const missed = blocks.filter((block) => block.status === "MISSED");
   const rescheduled = blocks.filter((block) => block.status === "RESCHEDULED");
   const cancelled = blocks.filter((block) => block.status === "CANCELLED");
-  const reasons = [...missed, ...rescheduled].map((block) => block.executionRecord?.deviationReason).filter((value): value is string => Boolean(value));
-  const obstacles = blocks.map((block) => block.executionRecord?.obstacle).filter((value): value is string => Boolean(value));
+  const legacyBlocks = blocks.filter((block) => (block.executionRecord?.feedbackVersion ?? 1) < 2);
+  const reasons = legacyBlocks
+    .filter((block) => block.status === "MISSED" || block.status === "RESCHEDULED")
+    .map((block) => block.executionRecord?.deviationReason)
+    .filter((value): value is string => Boolean(value));
+  const obstacles = legacyBlocks
+    .map((block) => block.executionRecord?.obstacle)
+    .filter((value): value is string => Boolean(value));
   return {
     missedCount: missed.length,
     rescheduledCount: rescheduled.length,
@@ -667,6 +725,7 @@ async function tryAIDailyReview(facts: DailyFacts): Promise<ReviewResult | null>
     const prompt = `这是一份日回顾请求，聚焦「今天执行得怎样、感受如何、今晚/明天要不要轻调」。
 周期：${facts.period.periodStart} 到 ${facts.period.periodEnd}
 周期指标：总日程 ${facts.periodMetrics.total} 个，完成 ${facts.periodMetrics.completed}，未完成 ${facts.periodMetrics.missed}，改期 ${facts.periodMetrics.rescheduled}，取消 ${facts.periodMetrics.cancelled}，真实投入 ${facts.periodMetrics.investedMinutes} 分钟，顺畅反馈 ${facts.periodMetrics.smoothCount} 次，阻力反馈 ${facts.periodMetrics.resistanceCount} 次。
+专注体验分布（内部枚举，仅用于推理，输出时改写为自然中文）：${JSON.stringify(facts.periodMetrics.focusCounts)}
 ${facts.pendingFeedbackCount ? `另有 ${facts.pendingFeedbackCount} 个已结束但用户尚未记录执行结果的日程块。` : ""}
 
 今日日程与执行详情（含用户自然语言补充感受 note 字段）：
@@ -716,6 +775,7 @@ async function tryAIWeeklyReview(facts: WeeklyFacts): Promise<ReviewResult | nul
     const prompt = `这是一份周回顾请求，聚焦「这一周节奏与目标推进如何、哪些阶段该由用户自己确认」。
 周期：${facts.period.periodStart} 到 ${facts.period.periodEnd}
 周期指标：总日程 ${facts.periodMetrics.total} 个，完成 ${facts.periodMetrics.completed}，未完成 ${facts.periodMetrics.missed}，改期 ${facts.periodMetrics.rescheduled}，取消 ${facts.periodMetrics.cancelled}，真实投入 ${facts.periodMetrics.investedMinutes} 分钟，顺畅反馈 ${facts.periodMetrics.smoothCount} 次，阻力反馈 ${facts.periodMetrics.resistanceCount} 次。
+专注体验分布（内部枚举，仅用于推理，输出时改写为自然中文）：${JSON.stringify(facts.periodMetrics.focusCounts)}
 
 按天聚合（数字已算好，直接引用，不要重新计算）：
 ${JSON.stringify(facts.dailyAggregation, null, 2)}
@@ -774,7 +834,7 @@ ${JSON.stringify(facts.activeRhythmSignals, null, 2)}
  * 尝试调用 AI 模型提取节奏信号。失败时返回 null，由调用方降级到规则。
  */
 async function tryAIRhythmSignals(
-  blocks: Array<{ status: string; executionRecord: { rhythmFeedback: { tags: string[]; comfortable: boolean | null; timeFit: string | null } | null } | null }>,
+  blocks: PeriodBlock[],
   metrics: PeriodMetrics,
   reviewId: string, periodStart: Date, periodEnd: Date,
 ) {
@@ -787,7 +847,18 @@ async function tryAIRhythmSignals(
     const prompt = `基于以下执行数据，提取有价值的节奏信号（每条需有数据支撑）：
 完成率：${metrics.total > 0 ? Math.round((metrics.completed / metrics.total) * 100) : 0}%，投入：${metrics.investedMinutes} 分钟
 顺畅次数：${metrics.smoothCount}，阻力次数：${metrics.resistanceCount}
-反馈数据：${JSON.stringify(blocks.slice(0, 20).map((b) => ({ tags: b.executionRecord?.rhythmFeedback?.tags ?? [], comfortable: b.executionRecord?.rhythmFeedback?.comfortable, timeFit: b.executionRecord?.rhythmFeedback?.timeFit })))}
+专注体验分布：${JSON.stringify(metrics.focusCounts)}
+反馈数据：${JSON.stringify(blocks.slice(0, 20).map((block) => {
+  const record = block.executionRecord;
+  const feedback = record?.rhythmFeedback;
+  const isV2 = (record?.feedbackVersion ?? 1) >= 2;
+  return {
+    focusState: resolveExecutionFocusState(record?.feedbackVersion, feedback?.focusState, feedback?.tags ?? []),
+    tags: isV2 ? [] : feedback?.tags ?? [],
+    comfortable: isV2 ? undefined : feedback?.comfortable,
+    timeFit: isV2 ? undefined : feedback?.timeFit,
+  };
+}))}
 
 请输出 signals 数组，每条包含：type（信号类型，snake_case）、statement（陈述）、confidence（0-1）、evidenceSummary（证据摘要）。
 数据不足时返回空数组，不要捏造信号。`;
@@ -890,11 +961,13 @@ function buildRulesWeeklyReview(facts: WeeklyFacts): ReviewResult {
 /**
  * 规则引擎降级路径，基于统计数据生成固定类型的节奏信号。
  */
-function buildRulesSignals(metrics: PeriodMetrics, reviewId: string, periodStart: Date, periodEnd: Date) {
+export function buildRulesSignals(metrics: PeriodMetrics, reviewId: string, periodStart: Date, periodEnd: Date) {
   const evidence = { reviewId, periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString(), metrics };
   return [
     ...(metrics.smoothCount >= 2 ? [{ type: "smooth_pattern", statement: `本周期记录到 ${metrics.smoothCount} 次顺畅执行，当前安排中存在值得保护的顺畅窗口。`, confidence: Math.min(0.9, 0.45 + metrics.smoothCount * 0.08), evidence }] : []),
-    ...(metrics.resistanceCount >= 2 ? [{ type: "resistance_pattern", statement: `本周期记录到 ${metrics.resistanceCount} 次阻力信号，任务粒度或时间匹配需要调整。`, confidence: Math.min(0.9, 0.45 + metrics.resistanceCount * 0.08), evidence }] : []),
+    ...(metrics.focusCounts.under_challenged >= 2 ? [{ type: "under_challenged_pattern", statement: `本周期记录到 ${metrics.focusCounts.under_challenged} 次挑战不足，任务难度可能低于当前能力。`, confidence: Math.min(0.9, 0.45 + metrics.focusCounts.under_challenged * 0.08), evidence }] : []),
+    ...(metrics.focusCounts.overloaded >= 2 ? [{ type: "overload_pattern", statement: `本周期记录到 ${metrics.focusCounts.overloaded} 次负荷过高，适合拆小任务或补足准备。`, confidence: Math.min(0.9, 0.45 + metrics.focusCounts.overloaded * 0.08), evidence }] : []),
+    ...(metrics.focusCounts.fragmented >= 2 ? [{ type: "fragmented_focus_pattern", statement: `本周期记录到 ${metrics.focusCounts.fragmented} 次频繁分心，适合保护连续时间并减少切换。`, confidence: Math.min(0.9, 0.45 + metrics.focusCounts.fragmented * 0.08), evidence }] : []),
     ...(metrics.total >= 3 ? [{ type: "completion_pattern", statement: `本周期日程完成率为 ${Math.round((metrics.completed / metrics.total) * 100)}%。`, confidence: 0.75, evidence }] : []),
   ];
 }

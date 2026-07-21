@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "datasetVersion": "v0.4.0",
+  "generatedAt": "2026-07-20T16:18:56.849Z",
+  "cases": {
+    "router": 120,
+    "planner": 30,
+    "runtime": 30,
+    "performance": 10
+  },
+  "baseline": {
+    "routerTop1": 0.5167,
+    "multiIntentRecall": 0,
+    "slotF1": 0
+  },
+  "candidate": {
+    "routerTop1": 1,
+    "routerPerCapabilityMinimum": 1,
+    "multiIntentRecall": 1,
+    "slotF1": 1,
+    "clarificationAccuracy": 1,
+    "plannerCoverage": 1,
+    "plannerSafety": 1,
+    "runtimeSuccess": 1,
+    "runtimeSafety": 1,
+    "partialFailurePreservation": 1,
+    "duplicateWrites": 0,
+    "unauthorizedWrites": 0,
+    "contextSerialP50Ms": 76.0351,
+    "contextParallelP50Ms": 30.6406,
+    "contextImprovementP50": 0.597,
+    "toolSerialP95Ms": 66.1277,
+    "toolParallelP95Ms": 21.623,
+    "toolImprovementP95": 0.673
+  },
+  "deterministicGatesPassed": true,
+  "realModelSample": {
+    "status": "blocked_before_request",
+    "reason": "provider_not_configured",
+    "requestsSent": 0,
+    "requiredCommand": "npm run eval:agent:model-sample"
+  }
+}

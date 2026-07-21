@@ -1,0 +1,29 @@
+{
+  "id": "v0-4-0-optimization-plan",
+  "name": "v0-4-0-optimization-plan",
+  "title": "V0.4.0 优化计划",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "skyeLiao",
+  "assignee": "skyeLiao",
+  "createdAt": "2026-07-20",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "07-20-v0-4-0-goal-execution",
+    "07-20-v0-4-0-agent-quality-efficiency"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

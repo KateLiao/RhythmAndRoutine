@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { Goal, buildLocalTaskCompletionRecord, initialGoals, initialSchedule, resolveScheduleTaskIds, scheduleBelongsToGoal, scheduleInvestedMinutes, scheduleLinksTask, taskInvestedMinutes, ScheduleItem } from "@/lib/demo-data";
+import { Goal, buildLocalTaskCompletionRecord, enrichLocalGoalsWithExecution, initialGoals, initialSchedule, resolveScheduleTaskIds, scheduleBelongsToGoal, scheduleInvestedMinutes, scheduleLinksTask, taskInvestedMinutes, ScheduleItem } from "@/lib/demo-data";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
 import { changeSetApi, homeInsightsApi, loadModelProviders, loadWorkspace, mapServerBlockToScheduleItem, reviewApi, settingsApi, workspaceApi, type AgentChangeSet, type ApiHomeInsights, type HomeInsightProposedChange, type ModelProviderInfo, type ReviewContent, type ReviewRecord, type RhythmSignalRecord, type UserSettings } from "@/lib/client-api";
 import { resolveManualReviewPeriod, selectCurrentReview } from "@/lib/review-schedule";
@@ -43,6 +43,22 @@ import { ScheduleDetailDrawer } from "@/components/calendar/schedule-detail-draw
 import type { CalendarMode } from "@/lib/calendar/navigation";
 import { isActiveCalendarBlock } from "@/lib/calendar/active-block";
 import { formatToolbarTitle, shiftAnchorDate, weekDateKeys, weekStartFromDate } from "@/lib/calendar/navigation";
+import { resolveAgentPageGoalId } from "@/lib/agent-page-context";
+import {
+  EXECUTION_FEEDBACK_VERSION,
+  executionFocusLabel,
+  executionFocusOptions,
+  executionOutcomeLabel,
+  executionOutcomeOptions,
+  executionQualityLabel,
+  executionQualityOptions,
+  normalizeExecutionOutcome,
+  normalizeExecutionQuality,
+  resolveExecutionFocusState,
+  type ExecutionFocusState,
+  type ExecutionQuality,
+  type ExecutionResult,
+} from "@/domain/execution-feedback";
 
 type View = "today" | "goals" | "goal-detail" | "task-detail" | "routines" | "review" | "settings";
 type Modal = "goal" | "goal-detail" | "task-create" | "task-edit" | "routine" | "schedule-choice" | "schedule" | "personal-schedule" | "schedule-edit" | "feedback" | null;
@@ -57,11 +73,27 @@ const viewMeta: Record<View, { label: string; kicker: string; title: string }> =
   settings: { label: "设置", kicker: "模型、时间与使用边界", title: "偏好设置" },
 };
 
-function minutesToText(minutes: number) {
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  if (!hours) return `${rest} 分钟`;
-  return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+function goalStatusLabel(status: Goal["status"]): string {
+  return status === "active" ? "推进中" : status === "paused" ? "已暂停" : status === "completed" ? "已完成" : "已归档";
+}
+
+function achievementIcon(icon: NonNullable<Goal["execution"]>["achievements"][number]["icon"]) {
+  if (icon === "calendar") return <CalendarDays size={18} />;
+  if (icon === "flag") return <Flag size={18} />;
+  if (icon === "return") return <RotateCcw size={18} />;
+  if (icon === "repeat") return <Infinity size={18} />;
+  if (icon === "package") return <ListChecks size={18} />;
+  if (icon === "gem") return <Target size={18} />;
+  if (icon === "focus" || icon === "hourglass") return <Clock size={18} />;
+  return <Sparkles size={18} />;
+}
+
+function achievementModuleLabel(module: NonNullable<Goal["execution"]>["achievements"][number]["module"]): string {
+  return module === "core" ? "基础" : module === "project" ? "项目" : module === "skill" ? "技能" : "Routine";
+}
+
+function achievementTierLabel(tier: NonNullable<Goal["execution"]>["achievements"][number]["tier"]): string {
+  return tier === "basic" ? "基础" : tier === "advanced" ? "进阶" : "稀有";
 }
 
 /**
@@ -141,6 +173,24 @@ export function ProductShell() {
   const [alternateMomentIndex, setAlternateMomentIndex] = useState(0);
   const [insightTick, setInsightTick] = useState(0);
   const [serverInsights, setServerInsights] = useState<ApiHomeInsights | null>(null);
+  const localGoalProjection = useRef(new Map<string, Goal>());
+  const displayedGoals = useMemo(() => {
+    if (dataMode !== "local") return goals;
+    const seeded = goals.map((goal) => {
+      const previous = localGoalProjection.current.get(goal.id);
+      return {
+        ...goal,
+        achievementHistory: goal.achievementHistory?.length ? goal.achievementHistory : previous?.achievementHistory,
+        milestones: (goal.milestones ?? []).map((milestone) => {
+          const previousMilestone = previous?.milestones?.find((item) => item.id === milestone.id);
+          return { ...milestone, reviewSuggestions: milestone.reviewSuggestions ?? previousMilestone?.reviewSuggestions };
+        }),
+      };
+    });
+    const enriched = enrichLocalGoalsWithExecution(seeded, schedule, userSettings.timezone);
+    localGoalProjection.current = new Map(enriched.map((goal) => [goal.id, goal]));
+    return enriched;
+  }, [dataMode, goals, schedule, userSettings.timezone]);
 
   useEffect(() => {
     const savedGoals = localStorage.getItem("rr.goals");
@@ -171,7 +221,7 @@ export function ProductShell() {
     return () => window.clearTimeout(restore);
   }, []);
 
-  useEffect(() => localStorage.setItem("rr.goals", JSON.stringify(goals)), [goals]);
+  useEffect(() => localStorage.setItem("rr.goals", JSON.stringify(dataMode === "local" ? displayedGoals : goals)), [dataMode, displayedGoals, goals]);
   useEffect(() => localStorage.setItem("rr.schedule", JSON.stringify(schedule)), [schedule]);
   useEffect(() => localStorage.setItem("rr.reviews", JSON.stringify(reviews)), [reviews]);
   useEffect(() => localStorage.setItem("rr.settings", JSON.stringify(userSettings)), [userSettings]);
@@ -186,9 +236,10 @@ export function ProductShell() {
   }, [notice]);
 
   const selectedItem = schedule.find((item) => item.id === selectedBlock);
-  const selectedGoal = goals.find((goal) => goal.id === selectedGoalId);
+  const selectedGoal = displayedGoals.find((goal) => goal.id === selectedGoalId);
   const selectedTask = selectedGoal?.tasks?.find((task) => task.id === selectedTaskId);
   const modalTask = selectedGoal?.tasks?.find((task) => task.id === (taskEditId ?? selectedTaskId));
+  const agentPageGoalId = resolveAgentPageGoalId(view, selectedGoalId);
   const todayPendingCount = countTodayPendingSchedule(schedule, userSettings.timezone);
   const reviewNeedsAttention = hasAwaitingReview(reviews);
 
@@ -206,7 +257,7 @@ export function ProductShell() {
     if (!item || item.kind !== "personal" || item.status === "completed") return;
     const actualMinutes = durationMinutes(item.start, item.end);
     if (dataMode === "database") {
-      await workspaceApi.recordExecution(item.id, { result: "completed", tags: ["smooth"], actualMinutes });
+      await workspaceApi.recordExecution(item.id, { feedbackVersion: EXECUTION_FEEDBACK_VERSION, result: "achieved", tags: [], actualMinutes });
       await refreshDatabase();
     } else {
       setSchedule((items) => items.map((entry) => entry.id === id ? { ...entry, status: "completed" } : entry));
@@ -260,7 +311,7 @@ export function ProductShell() {
     setModal(null);
     setView("goal-detail");
     setAgentOpen(true);
-    setNotice("目标已保存，小律已准备好帮你澄清");
+    setNotice("目标已保存，可以直接开始安排下一步");
   }
 
   async function updateScheduleTime(item: ScheduleItem, start: string, end: string, date?: string) {
@@ -495,7 +546,7 @@ export function ProductShell() {
    * @param patch - 待更新的任务字段
    */
   async function saveTaskEdits(goalId: string, taskId: string, patch: TaskFormPatch, options?: { keepModalOpen?: boolean }) {
-    const goal = goals.find((entry) => entry.id === goalId);
+    const goal = displayedGoals.find((entry) => entry.id === goalId);
     const task = goal?.tasks?.find((entry) => entry.id === taskId);
     if (!task) return;
     if (dataMode === "database") {
@@ -528,7 +579,7 @@ export function ProductShell() {
    * @param taskId - 任务 ID
    */
   async function completeTaskWithAi(goalId: string, taskId: string) {
-    const goal = goals.find((entry) => entry.id === goalId);
+    const goal = displayedGoals.find((entry) => entry.id === goalId);
     const task = goal?.tasks?.find((entry) => entry.id === taskId);
     if (!task || task.status === "completed") return;
     if (dataMode === "database") {
@@ -541,7 +592,7 @@ export function ProductShell() {
         return {
           ...entry,
           tasksDone: entry.tasksDone + 1,
-          tasks: (entry.tasks ?? []).map((item) => item.id === taskId ? { ...item, status: "completed", completionRecord, version: item.version + 1 } : item),
+          tasks: (entry.tasks ?? []).map((item) => item.id === taskId ? { ...item, status: "completed", completedAt: new Date().toISOString(), completionRecord, version: item.version + 1 } : item),
         };
       }));
     }
@@ -554,7 +605,7 @@ export function ProductShell() {
    * @param taskId - 任务 ID
    */
   async function archiveTaskById(goalId: string, taskId: string) {
-    const goal = goals.find((entry) => entry.id === goalId);
+    const goal = displayedGoals.find((entry) => entry.id === goalId);
     const task = goal?.tasks?.find((entry) => entry.id === taskId);
     if (!task) return;
     if (dataMode === "database") {
@@ -585,7 +636,7 @@ export function ProductShell() {
     setModal(null);
   }
 
-  async function saveFeedback(input: { tag: string; result: "completed" | "not_completed" | "rescheduled"; actualMinutes?: number; actualStartedAt?: string; actualEndedAt?: string; quality?: string; obstacle?: string; nextAction?: string; note?: string; comfortable?: boolean; timeFit?: string }) {
+  async function saveFeedback(input: ExecutionFeedbackFormInput) {
     if (!selectedItem) return;
     if (dataMode === "database" && selectedItem.source === "routine_occurrence" && selectedItem.routineId && selectedItem.occurrenceDate) {
       const itemDate = selectedItem.date ?? currentDateKey();
@@ -593,10 +644,13 @@ export function ProductShell() {
       const payload: Parameters<typeof workspaceApi.recordRoutineExecution>[0] = {
         routineId: selectedItem.routineId,
         occurrenceDate: selectedItem.occurrenceDate,
-        status: input.result === "completed" ? "completed" : input.result === "rescheduled" ? "rescheduled" : "skipped",
+        status: input.result === "achieved" || input.result === "progressed" ? "completed" : input.result === "rescheduled" ? "rescheduled" : "skipped",
+        feedbackVersion: EXECUTION_FEEDBACK_VERSION,
+        result: input.result,
         actualMinutes: input.actualMinutes,
-        feedbackTags: [feedbackTag(input.tag)],
-        note: input.note,
+        quality: input.quality ?? null,
+        focusState: input.focusState ?? null,
+        note: input.note ?? null,
       };
       if (!selectedItem.execution) {
         payload.plannedStartAt = zonedDateTimeToIso(itemDate, selectedItem.start, userSettings.timezone);
@@ -609,9 +663,33 @@ export function ProductShell() {
       await workspaceApi.recordRoutineExecution(payload);
       await refreshDatabase();
     } else if (dataMode === "database") {
-      await workspaceApi.recordExecution(selectedItem.id, { result: input.result, tags: [feedbackTag(input.tag)], actualMinutes: input.actualMinutes, actualStartedAt: input.actualStartedAt ? localInputToIso(input.actualStartedAt, userSettings.timezone) : undefined, actualEndedAt: input.actualEndedAt ? localInputToIso(input.actualEndedAt, userSettings.timezone) : undefined, quality: input.quality, obstacle: input.obstacle, nextAction: input.nextAction, deviationReason: input.result === "completed" ? undefined : input.note, note: input.note, comfortable: input.comfortable, timeFit: input.timeFit });
+      await workspaceApi.recordExecution(selectedItem.id, {
+        feedbackVersion: EXECUTION_FEEDBACK_VERSION,
+        result: input.result,
+        actualMinutes: input.actualMinutes,
+        actualStartedAt: input.actualStartedAt ? localInputToIso(input.actualStartedAt, userSettings.timezone) : undefined,
+        actualEndedAt: input.actualEndedAt ? localInputToIso(input.actualEndedAt, userSettings.timezone) : undefined,
+        quality: input.quality ?? null,
+        focusState: input.focusState ?? null,
+        deviationReason: input.result === "rescheduled" ? input.note : undefined,
+        note: input.note ?? null,
+      });
       await refreshDatabase();
-    } else setSchedule((items) => items.map((item) => item.id === selectedItem.id ? { ...item, status: input.result === "completed" ? "completed" : "missed", feedback: input.tag } : item));
+    } else setSchedule((items) => items.map((item) => item.id === selectedItem.id ? {
+      ...item,
+      status: input.result === "achieved" || input.result === "progressed" ? "completed" : input.result === "rescheduled" ? "rescheduled" : "missed",
+      execution: {
+        result: input.result,
+        feedbackVersion: EXECUTION_FEEDBACK_VERSION,
+        actualMinutes: input.actualMinutes ?? 0,
+        actualStartedAt: input.actualStartedAt ? localInputToIso(input.actualStartedAt, userSettings.timezone) : undefined,
+        actualEndedAt: input.actualEndedAt ? localInputToIso(input.actualEndedAt, userSettings.timezone) : undefined,
+        quality: input.quality,
+        focusState: input.focusState,
+        note: input.note,
+        tags: item.execution?.tags ?? [],
+      },
+    } : item));
     setModal(null);
   }
 
@@ -660,9 +738,40 @@ export function ProductShell() {
   }
 
   async function confirmMilestone(goalId: string, milestone: NonNullable<Goal["milestones"]>[number]) {
+    const suggestion = milestone.reviewSuggestions?.find((item) => item.status === "pending");
+    if (suggestion) {
+      await decideMilestoneReview(goalId, milestone.id, suggestion.id, "confirm");
+      return;
+    }
     if (dataMode === "database") { await workspaceApi.updateMilestone(milestone.id, { status: "completed", expectedVersion: milestone.version }); await refreshDatabase(); }
-    else setGoals((items) => items.map((goal) => goal.id === goalId ? { ...goal, milestones: goal.milestones?.map((item) => item.id === milestone.id ? { ...item, status: "completed", version: item.version + 1 } : item) } : goal));
+    else setGoals((items) => items.map((goal) => goal.id === goalId ? { ...goal, milestones: goal.milestones?.map((item) => item.id === milestone.id ? { ...item, status: "completed", completedAt: new Date().toISOString(), version: item.version + 1 } : item) } : goal));
     setNotice("里程碑已由你确认完成");
+  }
+
+  async function decideMilestoneReview(goalId: string, milestoneId: string, suggestionId: string, action: "confirm" | "snooze" | "dismiss", reason?: string) {
+    if (dataMode === "database") {
+      await workspaceApi.decideMilestoneSuggestion(suggestionId, { action, reason });
+      await refreshDatabase();
+    } else {
+      const now = new Date();
+      setGoals((items) => items.map((goal) => goal.id !== goalId ? goal : {
+        ...goal,
+        milestones: goal.milestones?.map((milestone) => {
+          if (milestone.id !== milestoneId) return milestone;
+          const reviewSuggestions = (milestone.reviewSuggestions ?? []).map((suggestion) => suggestion.id !== suggestionId ? suggestion : {
+            ...suggestion,
+            status: action === "confirm" ? "accepted" as const : action === "snooze" ? "snoozed" as const : "dismissed" as const,
+            decidedAt: now.toISOString(),
+            decisionReason: reason ?? (action === "confirm" ? "用户确认阶段成果已达成" : action === "snooze" ? "稍后再判断" : "当前证据不足以代表阶段完成"),
+            snoozedUntil: action === "snooze" ? new Date(now.getTime() + 7 * 86_400_000).toISOString() : action === "dismiss" ? new Date(now.getTime() + 14 * 86_400_000).toISOString() : null,
+          });
+          return action === "confirm"
+            ? { ...milestone, status: "completed", completedAt: now.toISOString(), version: milestone.version + 1, reviewSuggestions }
+            : { ...milestone, reviewSuggestions };
+        }),
+      }));
+    }
+    setNotice(action === "confirm" ? "里程碑已由你确认完成" : action === "snooze" ? "已推迟 7 天再提醒" : "已记录你的判断，正式里程碑没有变化");
   }
 
   async function saveRoutineQuickSettings(routine: NonNullable<Goal["routines"]>[number], patch: { startDate: string; endDate: string | null; status: "active" | "paused" }) {
@@ -676,7 +785,7 @@ export function ProductShell() {
       await refreshDatabase();
     } else {
       const updatedRoutine = { ...routine, ...normalized, version: routine.version + 1 };
-      const routineGoalId = goals.find((goal) => goal.routines?.some((item) => item.id === routine.id))?.id ?? "";
+      const routineGoalId = displayedGoals.find((goal) => goal.routines?.some((item) => item.id === routine.id))?.id ?? "";
       setGoals((items) => items.map((goal) => ({
         ...goal,
         routines: goal.routines?.map((item) => item.id === routine.id ? updatedRoutine : item),
@@ -739,26 +848,26 @@ export function ProductShell() {
         </header>
 
         {view === "today" && <TodayView goals={goals} schedule={schedule} rhythmSignals={rhythmSignals} timezone={userSettings.timezone} dataMode={dataMode} serverInsights={serverInsights} alternateMomentIndex={alternateMomentIndex} insightTick={insightTick} onFeedback={openFeedback} onComplete={completePersonalSchedule} onEdit={(id) => { const item = schedule.find((entry) => entry.id === id); setSelectedBlock(id); setModal(item?.source === "routine_occurrence" ? "feedback" : "schedule-edit"); }} onAdd={(seed) => openScheduleModal(seed, { promptType: true })} onUpdateTime={updateScheduleTime} onApplyMoment={applyMomentAction} onApplyServerMoment={applyServerMomentChange} onAlternateMoment={alternateServerMoment} onRegenerateMoment={(signal) => regenerateInsightTarget("moment", signal)} onRegenerateSlow={(signal) => regenerateInsightTarget("slow", signal)} onPreferSignal={(signalId) => { preferSignalForScheduling(signalId); setInsightTick((value) => value + 1); setNotice("已记录，后续排程会优先考虑此节奏发现"); }} />}
-        {view === "goals" && <GoalsView goals={goals} onAdd={() => setModal("goal")} onOpen={(id) => { setSelectedGoalId(id); setSelectedTaskId(null); setView("goal-detail"); }} />}
-        {view === "goal-detail" && selectedGoal && <GoalDetailView goal={selectedGoal} schedule={schedule} reviews={reviews} rhythmSignals={rhythmSignals} onOpenTask={(taskId) => { setSelectedTaskId(taskId); setTaskDetailEditing(false); setView("task-detail"); }} onAddTask={openTaskCreateModal} onEditTask={openTaskEditModal} onDeleteTask={(taskId) => { const task = selectedGoal.tasks?.find((entry) => entry.id === taskId); if (task && window.confirm(`确定删除任务「${task.title}」？`)) void archiveTaskById(selectedGoal.id, taskId); }} onArrange={(seed) => openScheduleModal(seed)} onAskAgent={() => setAgentOpen(true)} />}
+        {view === "goals" && <GoalsView goals={displayedGoals} onAdd={() => setModal("goal")} onOpen={(id) => { setSelectedGoalId(id); setSelectedTaskId(null); setView("goal-detail"); }} />}
+        {view === "goal-detail" && selectedGoal && <GoalDetailView goal={selectedGoal} schedule={schedule} reviews={reviews} rhythmSignals={rhythmSignals} onOpenTask={(taskId) => { setSelectedTaskId(taskId); setTaskDetailEditing(false); setView("task-detail"); }} onAddTask={openTaskCreateModal} onEditTask={openTaskEditModal} onDeleteTask={(taskId) => { const task = selectedGoal.tasks?.find((entry) => entry.id === taskId); if (task && window.confirm(`确定删除任务「${task.title}」？`)) void archiveTaskById(selectedGoal.id, taskId); }} onArrange={(seed) => openScheduleModal(seed)} onMilestoneReview={(milestoneId, suggestionId, action, reason) => decideMilestoneReview(selectedGoal.id, milestoneId, suggestionId, action, reason)} onAskAgent={() => setAgentOpen(true)} />}
         {view === "task-detail" && selectedGoal && selectedTask && <TaskDetailView goal={selectedGoal} task={selectedTask} schedule={schedule} rhythmSignals={rhythmSignals} editing={taskDetailEditing} onEditingChange={setTaskDetailEditing} onSave={(patch) => saveTaskEdits(selectedGoal.id, selectedTask.id, patch, { keepModalOpen: true }).then(() => setTaskDetailEditing(false))} onComplete={() => completeTaskWithAi(selectedGoal.id, selectedTask.id)} onArrange={() => openScheduleModal({ goalId: selectedGoal.id, taskId: selectedTask.id })} onEditSchedule={(id) => { setSelectedBlock(id); setModal("schedule-edit"); }} onFeedback={openFeedback} onAskAgent={() => setAgentOpen(true)} />}
-        {view === "routines" && <RoutinesView goals={goals} schedule={schedule} selectedRoutineId={selectedRoutineId} timezone={userSettings.timezone} onSelect={setSelectedRoutineId} onEdit={(id) => { setSelectedRoutineId(id); setModal("routine"); }} onQuickSave={saveRoutineQuickSettings} onFeedback={openFeedback} onAskAgent={() => setAgentOpen(true)} />}
-        {view === "review" && <ReviewView goals={goals} reviews={reviews} settings={userSettings} onGenerate={(type, current) => void generateReview(type, current)} onConfirm={(review) => void confirmReview(review)} onConfirmOutcome={(goalId, outcome) => void confirmOutcome(goalId, outcome)} onConfirmMilestone={(goalId, milestone) => void confirmMilestone(goalId, milestone)} onCompleteTask={(goalId, taskId) => void completeTaskWithAi(goalId, taskId)} onAskAgent={() => setAgentOpen(true)} />}
+        {view === "routines" && <RoutinesView goals={displayedGoals} schedule={schedule} selectedRoutineId={selectedRoutineId} timezone={userSettings.timezone} onSelect={setSelectedRoutineId} onEdit={(id) => { setSelectedRoutineId(id); setModal("routine"); }} onQuickSave={saveRoutineQuickSettings} onFeedback={openFeedback} onAskAgent={() => setAgentOpen(true)} />}
+        {view === "review" && <ReviewView goals={displayedGoals} reviews={reviews} settings={userSettings} onGenerate={generateReview} onConfirm={(review) => void confirmReview(review)} onConfirmOutcome={(goalId, outcome) => void confirmOutcome(goalId, outcome)} onConfirmMilestone={(goalId, milestone) => void confirmMilestone(goalId, milestone)} onCompleteTask={(goalId, taskId) => void completeTaskWithAi(goalId, taskId)} onAskAgent={() => setAgentOpen(true)} />}
         {view === "settings" && <SettingsView providers={providers} provider={selectedProvider} model={selectedModel} settings={userSettings} onSave={async (provider, model, settings) => { setSelectedProvider(provider); setSelectedModel(model); setUserSettings(settings); localStorage.setItem("rr.provider", provider); localStorage.setItem("rr.model", model); if (dataMode === "database") await settingsApi.save({ ...settings, defaultModel: model }); setNotice("偏好设置已保存"); }} />}
       </main>
 
       <button className={clsx("agent-fab", agentOpen && "agent-fab-hidden")} onClick={() => setAgentOpen(true)} aria-label="打开小律">
         <Sparkles size={18} /><span>问小律</span>
       </button>
-      <AgentPanel open={agentOpen} onClose={() => setAgentOpen(false)} goals={goals} schedule={schedule} view={view} provider={selectedProvider} model={selectedModel} selectedGoalId={selectedGoalId} onApply={async (changeSet, indexes) => { if (dataMode === "database") { await changeSetApi.decide(changeSet.id, true, indexes); await refreshDatabase(); setNotice("小律的变更草案已应用"); } else applyLocalChangeSet({ ...changeSet, operations: changeSet.operations.filter((_, index) => indexes.includes(index)) }, goals, schedule, setGoals, setSchedule, setNotice); }} onReject={async (changeSet) => { if (dataMode === "database") await changeSetApi.decide(changeSet.id, false); setNotice("已拒绝这份草案，正式计划没有变化"); }} />
+      <AgentPanel open={agentOpen} onClose={() => setAgentOpen(false)} goals={displayedGoals} schedule={schedule} view={view} provider={selectedProvider} model={selectedModel} dataMode={dataMode} selectedGoalId={agentPageGoalId} onApply={async (changeSet, indexes) => { if (dataMode === "database") { await changeSetApi.decide(changeSet.id, true, indexes); await refreshDatabase(); setNotice("小律的变更草案已应用"); } else applyLocalChangeSet({ ...changeSet, operations: changeSet.operations.filter((_, index) => indexes.includes(index)) }, displayedGoals, schedule, setGoals, setSchedule, setNotice); }} onReject={async (changeSet) => { if (dataMode === "database") await changeSetApi.decide(changeSet.id, false); setNotice("已拒绝这份草案，正式计划没有变化"); }} />
 
       {modal === "goal" && <GoalModal onClose={() => setModal(null)} onSave={saveGoal} />}
       {modal === "goal-detail" && selectedGoal && <GoalDetailModal goal={selectedGoal} dataMode={dataMode} onClose={() => setModal(null)} onChanged={async () => { if (dataMode === "database") await refreshDatabase(); }} onLocalChange={(next) => setGoals((items) => items.map((goal) => goal.id === next.id ? next : goal))} onLocalArchive={() => { setGoals((items) => items.filter((goal) => goal.id !== selectedGoal.id)); setModal(null); }} onNotice={setNotice} />}
       {modal === "task-create" && selectedGoal && <TaskFormModal mode="create" goal={selectedGoal} dataMode={dataMode} onClose={closeTaskModal} onSave={(patch) => createTaskForGoal(selectedGoal.id, patch)} />}
       {modal === "task-edit" && selectedGoal && modalTask && <TaskFormModal mode="edit" goal={selectedGoal} task={modalTask} dataMode={dataMode} onClose={closeTaskModal} onSave={(patch) => saveTaskEdits(selectedGoal.id, modalTask.id, patch)} onDelete={() => archiveTaskById(selectedGoal.id, modalTask.id)} />}
-      {modal === "routine" && <RoutineFormModal goals={goals} routineId={selectedRoutineId} dataMode={dataMode} timezone={userSettings.timezone} onClose={() => setModal(null)} onSaved={async (goalId, routine) => { if (dataMode === "database") await refreshDatabase(); else setGoals((items) => items.map((goal) => goal.id === goalId ? { ...goal, routines: routine.id ? [...(goal.routines ?? []).filter((item) => item.id !== routine.id), routine] : goal.routines } : goal)); setSelectedRoutineId(routine.id); setModal(null); setNotice("Routine 已保存"); }} />}
+      {modal === "routine" && <RoutineFormModal goals={displayedGoals} routineId={selectedRoutineId} dataMode={dataMode} timezone={userSettings.timezone} onClose={() => setModal(null)} onSaved={async (goalId, routine) => { if (dataMode === "database") await refreshDatabase(); else setGoals((items) => items.map((goal) => goal.id === goalId ? { ...goal, routines: routine.id ? [...(goal.routines ?? []).filter((item) => item.id !== routine.id), routine] : goal.routines } : goal)); setSelectedRoutineId(routine.id); setModal(null); setNotice("Routine 已保存"); }} />}
       {modal === "schedule-choice" && <ScheduleAddChoiceModal initialSelection={scheduleSeed ?? undefined} onClose={() => { setModal(null); setScheduleSeed(null); }} onChooseGoal={() => setModal("schedule")} onChoosePersonal={() => setModal("personal-schedule")} />}
-      {modal === "schedule" && <ScheduleModal goals={goals} initialSelection={scheduleSeed ?? undefined} onClose={() => { setModal(null); setScheduleSeed(null); }} onSave={saveSchedule} />}
+      {modal === "schedule" && <ScheduleModal goals={displayedGoals} initialSelection={scheduleSeed ?? undefined} onClose={() => { setModal(null); setScheduleSeed(null); }} onSave={saveSchedule} />}
       {modal === "personal-schedule" && <PersonalScheduleModal initialSelection={scheduleSeed ?? undefined} onClose={() => { setModal(null); setScheduleSeed(null); }} onSave={saveSchedule} />}
       {modal === "schedule-edit" && selectedItem && <ScheduleEditModal item={selectedItem} dataMode={dataMode} goals={goals} onClose={() => setModal(null)} onSave={async (next, reason) => { const taskIds = resolveScheduleTaskIds(next); if (dataMode === "database" && next.version) { await workspaceApi.updateSchedule(next.id, { title: next.title, goalId: next.goalId || undefined, taskId: taskIds[0], taskIds, routineId: next.routineId, startsAt: zonedDateTimeToIso(next.date ?? currentDateKey(), next.start, userSettings.timezone), endsAt: zonedDateTimeToIso(next.date ?? currentDateKey(), next.end, userSettings.timezone), changeReason: reason.trim() || undefined, expectedVersion: next.version }); await refreshDatabase(); } else setSchedule((items) => items.map((item) => item.id === next.id ? { ...next, changeReason: reason } : item)); setModal(null); }} onDelete={async () => { if (dataMode === "database" && selectedItem.version) { await workspaceApi.deleteSchedule(selectedItem.id, selectedItem.version); await refreshDatabase(); } else setSchedule((items) => items.filter((item) => item.id !== selectedItem.id)); setModal(null); }} />}
       {modal === "feedback" && selectedItem && <FeedbackModal item={selectedItem} onClose={() => setModal(null)} onSave={saveFeedback} />}
@@ -771,20 +880,23 @@ function migrateLocalGoals(value: unknown): Goal[] {
   const migrated: Goal[] = [];
   for (const stored of value) {
     if (!stored || typeof stored !== "object") continue;
-    const goal = stored as Goal;
+    const goal = stored as Goal & { status?: string };
+    const status = goal.status === "paused" || goal.status === "completed" || goal.status === "archived" ? goal.status : "active";
+    const milestones = (goal.milestones ?? []).map((milestone) => ({ ...milestone, status: milestone.status === "ready_for_review" ? "pending" : milestone.status }));
     const template = initialGoals.find((item) => item.id === goal.id);
     if (!template) {
-      migrated.push({ ...goal, tasks: goal.tasks ?? [], routines: goal.routines ?? [], outcomes: goal.outcomes ?? [], milestones: goal.milestones ?? [] });
+      migrated.push({ ...goal, status, tasks: goal.tasks ?? [], routines: goal.routines ?? [], outcomes: goal.outcomes ?? [], milestones });
       continue;
     }
     const restoredTasks = goal.tasks ?? template.tasks ?? [];
     migrated.push({
       ...template,
       ...goal,
+      status,
       tasks: restoredTasks,
       routines: goal.routines ?? template.routines ?? [],
       outcomes: goal.outcomes ?? template.outcomes ?? [],
-      milestones: goal.milestones ?? template.milestones ?? [],
+      milestones: goal.milestones ? milestones : template.milestones ?? [],
       tasksDone: goal.tasks ? goal.tasksDone : restoredTasks.filter((task) => task.status === "completed").length,
       tasksTotal: goal.tasks ? goal.tasksTotal : restoredTasks.length,
     });
@@ -1389,7 +1501,7 @@ function RoutineDetail({ routine, goal, schedule, timezone, onEdit, onQuickSave,
       </form>
     </section>
     <section className="entity-section compact"><div className="entity-section-head"><div><span className="section-kicker">执行统计</span><h3>最近的坚持情况</h3></div></div><div className="routine-stat-grid"><div><strong>{rate}%</strong><span>近期完成率</span></div><div><strong>{streak}</strong><span>当前连续完成</span></div><div><strong>{completed.length}</strong><span>已完成次数</span></div><div><strong>{next ? `${next.date?.slice(5)} ${next.start}` : "—"}</strong><span>下一次</span></div></div></section>
-    <section className="entity-section compact"><div className="entity-section-head"><div><span className="section-kicker">执行记录</span><h3>每一次都留下证据</h3></div></div><div className="routine-history">{occurrences.slice(0, 8).map((item) => <article key={item.id}><i className={item.status} /><div><strong>{item.date} · {item.start}</strong><span>{scheduleStatusLabel(item.status)}{item.execution?.note ? ` · ${item.execution.note}` : ""}</span></div>{item.status === "planned" && <button onClick={() => onFeedback(item.id)}>记录</button>}</article>)}{!occurrences.length && <p>当前时间范围内还没有发生实例。</p>}</div></section>
+    <section className="entity-section compact"><div className="entity-section-head"><div><span className="section-kicker">执行记录</span><h3>每一次都留下证据</h3></div></div><div className="routine-history">{occurrences.slice(0, 8).map((item) => <article key={item.id}><i className={item.status} /><div><strong>{item.date} · {item.start}</strong><span>{scheduleStatusLabel(item.status)}{item.execution?.note ? ` · ${item.execution.note}` : ""}</span></div>{item.execution ? <button onClick={() => onFeedback(item.id)}>修正</button> : item.status !== "cancelled" && item.status !== "rescheduled" && <button onClick={() => onFeedback(item.id)}>记录</button>}</article>)}{!occurrences.length && <p>当前时间范围内还没有发生实例。</p>}</div></section>
     <section className="routine-ai-card"><div><Sparkles size={17} /><span>小律分析</span></div><p>{decided.length ? `目前记录了 ${decided.length} 次执行，完成率 ${rate}%。继续补充“顺畅 / 有阻力”和一句原因，小律才能更可靠地判断是否该调整时段或降低门槛。` : "完成或跳过几次后，小律会结合反馈分析阻力、时间匹配和频率是否合适。"}</p><button onClick={onAskAgent}>基于记录生成调整建议 <ArrowRight size={14} /></button><small>建议不会直接修改 Routine，仍需你确认。</small></section>
   </div>;
 }
@@ -1419,19 +1531,27 @@ function RoutineFormModal({ goals, routineId, dataMode, timezone, onClose, onSav
 }
 
 function GoalsView({ goals, onAdd, onOpen }: { goals: Goal[]; onAdd: () => void; onOpen: (id: string) => void }) {
+  const reviewTarget = goals.flatMap((goal) => (goal.milestones ?? []).flatMap((milestone) => (milestone.reviewSuggestions ?? []).filter((suggestion) => suggestion.status === "pending").map((suggestion) => ({ goal, milestone, suggestion })))).sort((a, b) => b.suggestion.suggestedAt.localeCompare(a.suggestion.suggestedAt))[0];
+  const totalWeekInvested = goals.reduce((sum, goal) => sum + (goal.execution?.weekInvestedMinutes ?? goal.completedMinutes), 0);
+  const totalActiveDays = new Set(goals.flatMap((goal) => goal.execution?.weekActiveDays ? [goal.id] : [])).size;
   return (
     <div className="goals-layout">
       <section className="goal-list-card">
         <div className="section-heading"><div><span className="section-kicker">方向层</span><h2>重要的事，正在怎样发生</h2></div><span className="quiet-count">{goals.length} 个目标</span></div>
         <div className="goal-list">
           {goals.map((goal) => {
-            const progress = goal.tasksTotal ? Math.round((goal.tasksDone / goal.tasksTotal) * 100) : 0;
+            const execution = goal.execution;
+            const weekInvested = execution?.weekInvestedMinutes ?? goal.completedMinutes;
             return (
               <article className="goal-row" key={goal.id}>
                 <button type="button" className="goal-row-open" onClick={() => onOpen(goal.id)} aria-label={`查看目标详情：${goal.title}`}>
                   <div className={`goal-symbol ${goal.color}`}><Flag size={18} /></div>
-                  <div className="goal-copy"><div className="goal-title-line"><h3>{goal.title}</h3><span className={clsx("status-pill", goal.status)}>{goal.status === "active" ? "推进中" : goal.status === "draft" ? "待澄清" : "已暂停"}</span></div><p>{goal.description}</p><div className="goal-stats"><span>本周 {minutesToText(goal.completedMinutes)}</span><span>{goal.tasksDone}/{goal.tasksTotal || "—"} 个任务</span></div></div>
-                  <div className="goal-progress"><strong>{progress}%</strong><div><i style={{ width: `${progress}%` }} /></div></div>
+                  <div className="goal-copy">
+                    <div className="goal-title-line"><h3>{goal.title}</h3><span className={clsx("status-pill", goal.status)}>{goalStatusLabel(goal.status)}</span></div>
+                    <p>{goal.description}</p>
+                    <div className="goal-stats"><span className={clsx("goal-action-state", execution?.actionHint?.kind)}>{execution?.actionHint?.label ?? (weekInvested ? "已经开始推进" : "可以安排下一次行动")}</span>{execution?.recentAchievement && <span className="goal-recent-achievement"><Sparkles size={11} />{execution.recentAchievement.title}</span>}</div>
+                  </div>
+                  <div className={clsx("goal-investment", weekInvested > 0 && "has-investment")}><strong>{weekInvested ? minutesToCompact(weekInvested) : "—"}</strong><span>{weekInvested ? "本周真实投入" : "本周还没有真实投入"}</span>{Boolean(execution?.weekActiveDays) && <small>{execution!.weekActiveDays} 个有效执行日</small>}</div>
                   <span className="goal-row-chevron" aria-hidden="true"><ChevronRight size={19} /></span>
                 </button>
               </article>
@@ -1441,20 +1561,21 @@ function GoalsView({ goals, onAdd, onOpen }: { goals: Goal[]; onAdd: () => void;
         <button className="empty-action" onClick={onAdd}><Plus size={18} /><span><strong>开始一个新目标</strong><small>先写下方向，细节可以和小律一起弄清楚。</small></span></button>
       </section>
       <aside className="goal-aside">
-        <section className="gentle-card"><span className="section-kicker">待你确认</span><h3>里程碑 1 可能已经完成</h3><p>数据库与开发规格已经明确。小律建议你检查是否可以进入实现阶段。</p><div className="button-row"><button className="primary-button small">去确认</button><button className="soft-button small">稍后</button></div></section>
-        <section className="gentle-card"><span className="section-kicker">本周投入</span><div className="big-time">8<small>h</small>30<small>m</small></div><p>其中 69% 投入在 Rhythm & Routine MVP。</p></section>
+        {reviewTarget ? <section className="gentle-card milestone-review-preview"><span className="section-kicker">待你确认</span><h3>{reviewTarget.milestone.title} 可能已经完成</h3><p>{reviewTarget.suggestion.reason}</p><div className="button-row"><button className="primary-button small" onClick={() => onOpen(reviewTarget.goal.id)}>查看证据</button></div></section> : <section className="gentle-card"><span className="section-kicker">当前行动</span><h3>目标都在等待真实发生</h3><p>卡片不再用任务数量制造完成感；现在只展示投入事实、阶段证据和下一步行动。</p></section>}
+        <section className="gentle-card"><span className="section-kicker">本周真实投入</span><div className="big-time">{minutesToCompact(totalWeekInvested)}</div><p>{totalWeekInvested ? `已有 ${totalActiveDays || "多个"} 个目标在本周留下执行记录。` : "本周还没有目标执行记录。安排不等于发生，完成日程后这里会累计真实投入。"}</p></section>
       </aside>
     </div>
   );
 }
 
-function GoalDetailView({ goal, schedule, reviews, rhythmSignals, onOpenTask, onAddTask, onEditTask, onDeleteTask, onArrange, onAskAgent }: { goal: Goal; schedule: ScheduleItem[]; reviews: ReviewRecord[]; rhythmSignals: RhythmSignalRecord[]; onOpenTask: (taskId: string) => void; onAddTask: () => void; onEditTask: (taskId: string) => void; onDeleteTask: (taskId: string) => void; onArrange: (seed: { goalId: string; taskId?: string; routineId?: string }) => void; onAskAgent: () => void }) {
+function GoalDetailView({ goal, schedule, reviews, rhythmSignals, onOpenTask, onAddTask, onEditTask, onDeleteTask, onArrange, onMilestoneReview, onAskAgent }: { goal: Goal; schedule: ScheduleItem[]; reviews: ReviewRecord[]; rhythmSignals: RhythmSignalRecord[]; onOpenTask: (taskId: string) => void; onAddTask: () => void; onEditTask: (taskId: string) => void; onDeleteTask: (taskId: string) => void; onArrange: (seed: { goalId: string; taskId?: string; routineId?: string }) => void; onMilestoneReview: (milestoneId: string, suggestionId: string, action: "confirm" | "snooze" | "dismiss", reason?: string) => Promise<void>; onAskAgent: () => void }) {
   const goalSchedule = schedule.filter((item) => scheduleBelongsToGoal(item, goal));
   const activeSchedule = goalSchedule.filter((item) => isActiveCalendarBlock(item));
   const completedBlocks = goalSchedule.filter((item) => item.status === "completed");
-  const invested = completedBlocks.reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
+  const invested = goal.execution?.investedMinutes ?? completedBlocks.reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
   const plannedMinutes = activeSchedule.reduce((sum, item) => sum + durationMinutes(item.start, item.end), 0);
-  const pendingConfirmation = (goal.outcomes ?? []).filter((item) => !item.completedAt).length + (goal.milestones ?? []).filter((item) => item.status === "ready_for_review").length;
+  const pendingMilestoneReviews = (goal.milestones ?? []).flatMap((milestone) => (milestone.reviewSuggestions ?? []).filter((suggestion) => suggestion.status === "pending").map((suggestion) => ({ milestone, suggestion })));
+  const milestoneGroups = groupMilestonesForDisplay(goal.milestones ?? []);
   const weekStart = startOfCurrentWeek();
   const weekEnd = new Date(weekStart);
   weekEnd.setDate(weekEnd.getDate() + 7);
@@ -1462,8 +1583,8 @@ function GoalDetailView({ goal, schedule, reviews, rhythmSignals, onOpenTask, on
     const date = new Date(`${item.date ?? currentDateKey()}T12:00:00`);
     return date >= weekStart && date < weekEnd;
   });
-  const weekInvested = weekSchedule.filter((item) => item.status === "completed").reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
-  const weekCompletedCount = weekSchedule.filter((item) => item.status === "completed").length;
+  const weekInvested = goal.execution?.weekInvestedMinutes ?? weekSchedule.filter((item) => item.status === "completed").reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
+  const weekActiveDays = goal.execution?.weekActiveDays ?? new Set(weekSchedule.filter((item) => item.status === "completed").map((item) => item.date ?? currentDateKey())).size;
   const maxDayMinutes = Math.max(30, ...Array.from({ length: 7 }, (_, index) => weekSchedule.filter((item) => item.status === "completed" && weekdayIndex(item.date ?? currentDateKey()) === index).reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0)));
 
   return (
@@ -1472,13 +1593,28 @@ function GoalDetailView({ goal, schedule, reviews, rhythmSignals, onOpenTask, on
         <section className="entity-section">
           <div className="entity-section-head">
             <div><span className="section-kicker">目标结构</span><h2>这个方向由什么组成</h2></div>
-            <span className={clsx("status-pill", goal.status)}>{goal.status === "active" ? "推进中" : goal.status === "draft" ? "待澄清" : "已暂停"}</span>
+            <span className={clsx("status-pill", goal.status)}>{goalStatusLabel(goal.status)}</span>
           </div>
           <div className="goal-structure-grid">
             <article><span>结果指标 · 由你确认</span><strong>{goal.outcomes?.[0]?.description ?? "还没有结果指标"}</strong><small>{goal.outcomes?.[0]?.completedAt ? "已确认完成" : "在回顾中确认是否达成"}</small></article>
             <article><span>项目</span><strong>{goal.project || goal.title}</strong><small>{goal.category ? goalCategoryLabel(goal.category) : "混合型目标"}</small></article>
-            <article><span>当前里程碑</span><strong>{goal.milestones?.find((item) => item.status !== "completed")?.title ?? "暂时没有进行中的里程碑"}</strong><small>{goal.milestones?.filter((item) => item.status === "completed").length ?? 0} 个里程碑已完成</small></article>
+            <article><span>当前里程碑</span><strong>{milestoneGroups.find((group) => !group.completed)?.title ?? "暂时没有进行中的里程碑"}</strong><small>{milestoneGroups.filter((group) => group.completed).length} 个里程碑已完成</small></article>
             <article><span>重点能力</span><strong>{goal.skill || "尚未设置"}</strong><small>通过任务与 Routine 持续积累</small></article>
+          </div>
+          {Boolean(goal.execution?.planningHints.length) && <div className="planning-hints" aria-label="规划提示">{goal.execution!.planningHints.map((hint) => <p key={hint}><Lightbulb size={14} />{hint}</p>)}</div>}
+        </section>
+
+        <section className="entity-section milestone-evidence-section">
+          <div className="entity-section-head"><div><span className="section-kicker">阶段成果</span><h2>里程碑由证据提醒，由你确认</h2><p>执行记录只能提示“值得检查”，不会替你宣布阶段完成。</p></div><span className="quiet-count">{milestoneGroups.filter((group) => group.completed).length}/{milestoneGroups.length} 已确认</span></div>
+          <div className="milestone-evidence-list">
+            {milestoneGroups.map((group) => {
+              const suggestionEntry = group.entries.flatMap((milestone) => (milestone.reviewSuggestions ?? []).filter((item) => item.status === "pending").map((suggestion) => ({ milestone, suggestion })))[0];
+              return <article className={clsx("milestone-evidence-card", group.completed && "is-completed", suggestionEntry && "needs-review")} key={group.key}>
+                <div className="milestone-evidence-icon">{group.completed ? <CircleCheck size={18} /> : <Flag size={17} />}</div>
+                <div className="milestone-evidence-copy"><div><strong>{group.title}</strong><span>{group.completed ? "已由你确认" : suggestionEntry ? "有新证据，待你判断" : group.criteria.length ? "等待证据" : "仅手动确认"}</span></div>{group.description && <p>{group.description}</p>}{group.entries.length > 1 && <small className="milestone-history-note">汇总 {group.entries.length} 条同名记录</small>}{group.criteria.length > 0 && <ul>{group.criteria.map((item) => <li key={item.id}>{item.label}</li>)}</ul>}{suggestionEntry && <div className="milestone-suggestion"><p>{suggestionEntry.suggestion.reason}</p><time>{new Date(suggestionEntry.suggestion.suggestedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time><div className="button-row"><button className="primary-button small" onClick={() => void onMilestoneReview(suggestionEntry.milestone.id, suggestionEntry.suggestion.id, "confirm")}>确认完成</button><button className="soft-button small" onClick={() => void onMilestoneReview(suggestionEntry.milestone.id, suggestionEntry.suggestion.id, "snooze")}>7 天后提醒</button><button className="soft-button small" onClick={() => { const reason = window.prompt("为什么当前证据还不足以代表阶段完成？（可留空）") ?? undefined; void onMilestoneReview(suggestionEntry.milestone.id, suggestionEntry.suggestion.id, "dismiss", reason); }}>驳回</button></div></div>}</div>
+              </article>;
+            })}
+            {!milestoneGroups.length && <div className="entity-empty">还没有里程碑。里程碑应描述可验证的阶段成果，而不是任务分组。</div>}
           </div>
         </section>
 
@@ -1530,7 +1666,7 @@ function GoalDetailView({ goal, schedule, reviews, rhythmSignals, onOpenTask, on
           <div className="goal-time-summary">
             <div><strong>{minutesToCompact(invested)}</strong><span>累计真实投入</span></div>
             <div><strong>{minutesToCompact(weekInvested)}</strong><span>本周真实投入</span></div>
-            <div><strong>{weekCompletedCount}/{weekSchedule.length || activeSchedule.length}</strong><span>本周完成/安排</span></div>
+            <div><strong>{weekActiveDays}</strong><span>本周有效执行日</span></div>
             <div><strong>{minutesToCompact(plannedMinutes)}</strong><span>当前计划总量</span></div>
           </div>
           <p className="goal-time-caption">本周真实投入分布</p>
@@ -1548,9 +1684,21 @@ function GoalDetailView({ goal, schedule, reviews, rhythmSignals, onOpenTask, on
           </div>
           {!goalSchedule.length && <div className="entity-empty">这个目标还没有进入日历。</div>}
         </section>
+
+        <section className="entity-section achievement-shelf-section">
+          <div className="entity-section-head"><div><span className="section-kicker">成就收藏</span><h2>值得记住的真实发生</h2><p>全部条件公开；成就记录投入与阶段事件，不代表目标完成百分比。</p></div><span className="achievement-count">{goal.execution?.achievements.filter((achievement) => achievement.state === "unlocked").length ?? 0}<small> / {goal.execution?.achievements.length ?? 0}</small></span></div>
+          <div className="achievement-grid">
+            {(goal.execution?.achievements ?? []).map((achievement) => <details className={clsx("achievement-card", achievement.state, `tier-${achievement.tier}`)} key={achievement.id}>
+              <summary><span className="achievement-medallion">{achievementIcon(achievement.icon)}</span><span className="achievement-copy"><small>{achievementModuleLabel(achievement.module)} · {achievementTierLabel(achievement.tier)}</small><strong>{achievement.title}</strong><em>{achievement.state === "unlocked" && achievement.unlockedAt ? `解锁于 ${new Date(achievement.unlockedAt).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })}` : achievement.evidenceSummary}</em></span><ChevronRight size={15} /></summary>
+              <div className="achievement-detail"><p>{achievement.description}</p><span>公开条件：{achievement.conditionLabel}</span>{achievement.evidenceSummary && <span>当前证据：{achievement.evidenceSummary}</span>}</div>
+            </details>)}
+            {!goal.execution?.achievements.length && <div className="entity-empty">完成第一次真实投入后，这里会出现属于这个目标类型的成就收藏。</div>}
+          </div>
+        </section>
       </div>
       <aside className="entity-side-stack">
-        <section className="entity-section compact"><span className="section-kicker">本周摘要</span><div className="entity-metrics"><div><strong>{minutesToCompact(weekInvested)}</strong><span>真实投入</span></div><div><strong>{goal.tasksDone}</strong><span>完成任务</span></div><div><strong>{pendingConfirmation}</strong><span>待确认</span></div></div></section>
+        <section className="entity-section compact"><span className="section-kicker">本周摘要</span><div className="entity-metrics"><div><strong>{minutesToCompact(weekInvested)}</strong><span>真实投入</span></div><div><strong>{weekActiveDays}</strong><span>有效执行日</span></div><div><strong>{pendingMilestoneReviews.length}</strong><span>里程碑待确认</span></div></div>{goal.execution?.actionHint && <p className={clsx("goal-side-action", goal.execution.actionHint.kind)}><strong>{goal.execution.actionHint.label}</strong><span>{goal.execution.actionHint.detail}</span></p>}</section>
+        {goal.execution?.recentAchievement && <section className="entity-section compact recent-achievement-card"><span className="section-kicker">最近解锁</span><div className="recent-achievement"><span className="achievement-medallion">{achievementIcon(goal.execution.recentAchievement.icon)}</span><div><strong>{goal.execution.recentAchievement.title}</strong><p>{goal.execution.recentAchievement.conditionLabel}</p><time>{goal.execution.recentAchievement.unlockedAt ? new Date(goal.execution.recentAchievement.unlockedAt).toLocaleDateString("zh-CN") : ""}</time></div></div></section>}
         <section className="entity-section compact"><div className="entity-section-head"><div><span className="section-kicker">Routine</span><h3>重复积累</h3></div></div><div className="side-entity-list">{goal.routines?.map((routine) => <article key={routine.id}><div><strong>{routine.title}</strong><span>{routine.minimumVersion || routine.recurrenceRule}</span></div><button onClick={() => onArrange({ goalId: goal.id, routineId: routine.id })}>安排</button></article>)}{!goal.routines?.length && <p>还没有 Routine。</p>}</div></section>
         <section className="entity-section compact"><div className="entity-section-head"><div><span className="section-kicker">小律建议</span><h3>从真实节奏出发</h3></div><button className="icon-button compact" onClick={onAskAgent}><Sparkles size={15} /></button></div><p className="entity-insight">{rhythmSignals[0]?.statement ?? "积累几次执行反馈后，小律会在这里解释适合这个目标的推进节奏。"}</p></section>
         <section className="entity-section compact"><span className="section-kicker">回顾历史</span><div className="side-review-list">{reviews.slice(0, 3).map((review) => <article key={review.id}><strong>{review.type === "weekly" ? "周回顾" : "日回顾"}</strong><span>{review.summary}</span></article>)}{!reviews.length && <p>还没有回顾记录。</p>}</div></section>
@@ -1742,8 +1890,8 @@ function TaskDetailView({ goal, task, schedule, rhythmSignals, editing, onEditin
                   <strong>{item.date ?? currentDateKey()} · {item.start}–{item.end}</strong>
                   <span className={clsx("status-pill", item.status)}>{scheduleStatusLabel(item.status)}</span>
                 </button>
-                <p>计划 {minutesToCompact(durationMinutes(item.start, item.end))}{item.execution?.actualMinutes != null ? `，实际 ${minutesToCompact(item.execution.actualMinutes)}` : ""}。{item.execution?.obstacle || item.execution?.deviationReason || (item.feedback ? `节奏反馈：${feedbackLabel(item.feedback)}` : "等待执行反馈。")}</p>
-                {item.status !== "completed" && <button className="history-feedback" onClick={() => onFeedback(item.id)}>记录执行</button>}
+                <p>计划 {minutesToCompact(durationMinutes(item.start, item.end))}{item.execution?.actualMinutes != null ? `，实际 ${minutesToCompact(item.execution.actualMinutes)}` : ""}。{executionFeedbackSummary(item)}</p>
+                {(item.execution || (item.status !== "cancelled" && item.status !== "rescheduled")) && <button className="history-feedback" onClick={() => onFeedback(item.id)}>{item.execution ? "修正记录" : "记录执行"}</button>}
               </article>
             ))}
             {!taskSchedule.length && <div className="entity-empty">这个任务还没有安排到日历。<button onClick={onArrange}>现在安排</button></div>}
@@ -1872,8 +2020,10 @@ function ReviewSectionCard({ section, compact = false }: { section: { key: strin
  * @param onAskAgent - 打开小律解释入口
  * @returns 回顾页面
  */
-function ReviewView({ goals, reviews, settings, onGenerate, onConfirm, onConfirmOutcome, onConfirmMilestone, onCompleteTask, onAskAgent }: { goals: Goal[]; reviews: ReviewRecord[]; settings: UserSettings; onGenerate: (type: "daily" | "weekly", current: ReviewRecord | null) => void; onConfirm: (review: ReviewRecord) => void; onConfirmOutcome: (goalId: string, outcome: NonNullable<Goal["outcomes"]>[number]) => void; onConfirmMilestone: (goalId: string, milestone: NonNullable<Goal["milestones"]>[number]) => void; onCompleteTask: (goalId: string, taskId: string) => void; onAskAgent: () => void }) {
+function ReviewView({ goals, reviews, settings, onGenerate, onConfirm, onConfirmOutcome, onConfirmMilestone, onCompleteTask, onAskAgent }: { goals: Goal[]; reviews: ReviewRecord[]; settings: UserSettings; onGenerate: (type: "daily" | "weekly", current: ReviewRecord | null) => Promise<void>; onConfirm: (review: ReviewRecord) => void; onConfirmOutcome: (goalId: string, outcome: NonNullable<Goal["outcomes"]>[number]) => void; onConfirmMilestone: (goalId: string, milestone: NonNullable<Goal["milestones"]>[number]) => void; onCompleteTask: (goalId: string, taskId: string) => void; onAskAgent: () => void }) {
   const [type, setType] = useState<"daily" | "weekly">("weekly");
+  const [generatingType, setGeneratingType] = useState<"daily" | "weekly" | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
   const latest = selectCurrentReview(reviews, type, settings);
   const periodLabel = latest ? describeReviewPeriod(type, latest.periodStart, settings.timezone) : type === "weekly" ? "上周" : "昨日";
   const metrics = latest?.metrics ?? {};
@@ -1885,22 +2035,34 @@ function ReviewView({ goals, reviews, settings, onGenerate, onConfirm, onConfirm
   const nextCycle = sectionByKey.get("nextCycleSuggestions");
   if (nextCycle) nextCycle.title = type === "weekly" ? "下周建议" : "明天可以这样调整";
   const confirmationItems = type === "weekly" ? goals.flatMap((goal) => [
-    ...(goal.milestones ?? []).filter((item) => item.status === "ready_for_review").map((item) => ({ kind: "milestone" as const, goal, item })),
+    ...(goal.milestones ?? []).filter((item) => item.reviewSuggestions?.some((suggestion) => suggestion.status === "pending")).map((item) => ({ kind: "milestone" as const, goal, item })),
     ...(goal.outcomes ?? []).filter((item) => !item.completedAt).map((item) => ({ kind: "outcome" as const, goal, item })),
   ]).slice(0, 6) : [];
   const readyTasks = type === "weekly" ? (latest?.content?.readyForCompletionTasks ?? []) : [];
-  const isBusy = latest?.status === "generating";
+  const isGenerating = generatingType === type;
+  const isBusy = latest?.status === "generating" || isGenerating;
   const statusMeta = reviewStatusMeta(latest?.status, isBusy);
   const smoothTotal = (metrics.smoothCount ?? 0) + (metrics.resistanceCount ?? 0);
 
-  function generate() { onGenerate(type, latest); }
+  async function generate() {
+    if (generatingType) return;
+    setGeneratingType(type);
+    setGenerationError(null);
+    try {
+      await onGenerate(type, latest);
+    } catch {
+      setGenerationError(`${latest ? "重新生成" : "生成"}没有完成，请稍后再试。`);
+    } finally {
+      setGeneratingType(null);
+    }
+  }
 
   return (
     <div className={clsx("review-page", type === "weekly" ? "review-weekly" : "review-daily")}>
       <div className="review-toolbar">
         <div className="review-tabs" role="tablist" aria-label="选择回顾周期">
-          <button role="tab" aria-selected={type === "daily"} className={type === "daily" ? "active" : ""} onClick={() => setType("daily")}>日回顾</button>
-          <button role="tab" aria-selected={type === "weekly"} className={type === "weekly" ? "active" : ""} onClick={() => setType("weekly")}>周回顾</button>
+          <button role="tab" aria-selected={type === "daily"} className={type === "daily" ? "active" : ""} disabled={generatingType !== null} onClick={() => setType("daily")}>日回顾</button>
+          <button role="tab" aria-selected={type === "weekly"} className={type === "weekly" ? "active" : ""} disabled={generatingType !== null} onClick={() => setType("weekly")}>周回顾</button>
         </div>
         <span><CalendarDays size={14} />{type === "weekly" ? "校准一周的节奏与方向" : "轻量收好今天的执行"}</span>
       </div>
@@ -1949,18 +2111,19 @@ function ReviewView({ goals, reviews, settings, onGenerate, onConfirm, onConfirm
             </section>
           )}
 
-          <section className="review-actions">
+          <section className="review-actions" aria-busy={isBusy}>
             <div className="button-row">
               {!latest || latest.status === "failed" ? (
-                <button className="primary-button" onClick={generate}><RefreshCcw size={15} />{latest ? "重新生成" : "手动生成"}{type === "weekly" ? "周" : "日"}回顾</button>
+                <button className="primary-button" onClick={() => void generate()} disabled={isBusy}>{isBusy ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{isBusy ? latest ? "正在重新生成…" : "正在生成…" : <>{latest ? "重新生成" : "手动生成"}{type === "weekly" ? "周" : "日"}回顾</>}</button>
               ) : (
                 <>
                   {!isBusy && <button className="primary-button" onClick={() => onConfirm(latest)}>{latest.status === "confirmed" ? "撤销确认" : "确认这份回顾"}</button>}
-                  <button className="soft-button" onClick={generate} disabled={isBusy}><RefreshCcw size={14} />重新生成</button>
+                  <button className="soft-button" onClick={() => void generate()} disabled={isBusy}>{isBusy ? <Loader2 size={14} className="spin" /> : <RefreshCcw size={14} />}{isBusy ? "正在重新生成…" : "重新生成"}</button>
                 </>
               )}
               <button className="soft-button" onClick={onAskAgent}>请小律解释</button>
             </div>
+            {generationError && <p className="review-generation-error" role="alert">{generationError}</p>}
           </section>
         </div>
 
@@ -2043,7 +2206,7 @@ function ModalShell({ title, caption, onClose, children }: { title: string; capt
 function GoalModal({ onClose, onSave }: { onClose: () => void; onSave: (goal: Goal) => void }) {
   const [title, setTitle] = useState(""); const [description, setDescription] = useState("");
   const [category, setCategory] = useState<Goal["category"]>("mixed"); const [project, setProject] = useState(""); const [skill, setSkill] = useState(""); const [targetDate, setTargetDate] = useState("");
-  function submit(event: FormEvent) { event.preventDefault(); if (!title.trim()) return; onSave({ id: crypto.randomUUID(), title: title.trim(), description: description.trim(), category, project: project.trim(), skill: skill.trim(), targetDate: targetDate ? zonedDateTimeToIso(targetDate, "23:59", currentTimezone()) : undefined, status: "draft", color: "coral", weeklyMinutes: 0, completedMinutes: 0, tasksDone: 0, tasksTotal: 0 }); }
+  function submit(event: FormEvent) { event.preventDefault(); if (!title.trim()) return; onSave({ id: crypto.randomUUID(), title: title.trim(), description: description.trim(), category, project: project.trim(), skill: skill.trim(), targetDate: targetDate ? zonedDateTimeToIso(targetDate, "23:59", currentTimezone()) : undefined, status: "active", color: "coral", weeklyMinutes: 0, completedMinutes: 0, tasksDone: 0, tasksTotal: 0 }); }
   return <ModalShell title="写下一个新目标" caption="目标保存方向与期限；项目、能力用独立字段表达，之后仍可修改。" onClose={onClose}><form className="form-stack" onSubmit={submit}><label>目标名称<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：完成一个可用的产品 MVP" required /></label><label>为什么这件事重要<textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="它会给你的生活带来什么变化？" rows={4} /></label><div className="field-row"><label>目标类型<select value={category} onChange={(e) => setCategory(e.target.value as Goal["category"])}><option value="project">项目型</option><option value="skill">能力型</option><option value="routine">Routine 型</option><option value="mixed">混合型</option></select></label><label>目标日期（可选）<input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} /></label></div>{(category === "project" || category === "mixed") && <label>关联项目<input value={project} onChange={(e) => setProject(e.target.value)} placeholder="例如：Rhythm & Routine MVP" /></label>}{(category === "skill" || category === "routine" || category === "mixed") && <label>关联能力<input value={skill} onChange={(e) => setSkill(e.target.value)} placeholder="例如：产品设计、英语口语" /></label>}<div className="form-note"><Sparkles size={16} /><span>成功标准请继续用结果指标表达，不必塞进目标说明。</span></div><div className="form-actions"><button type="button" className="soft-button" onClick={onClose}>取消</button><button className="primary-button">保存目标</button></div></form></ModalShell>;
 }
 
@@ -2239,11 +2402,11 @@ function GoalDetailModal({ goal, dataMode, onClose, onChanged, onLocalChange, on
     }, "里程碑已添加");
   }
 
-  async function saveMilestone(milestone: NonNullable<Goal["milestones"]>[number], nextTitle: string, status = milestone.status) {
+  async function saveMilestone(milestone: NonNullable<Goal["milestones"]>[number], patch: { title: string; description?: string; targetDate?: string | null; completionCriteria?: NonNullable<Goal["milestones"]>[number]["completionCriteria"]; status: string }) {
     await run(async () => {
-      if (dataMode === "database") { await workspaceApi.updateMilestone(milestone.id, { title: nextTitle, status, expectedVersion: milestone.version }); await onChanged(); }
-      else onLocalChange({ ...goal, milestones: (goal.milestones ?? []).map((item) => item.id === milestone.id ? { ...item, title: nextTitle, status, version: item.version + 1 } : item) });
-    }, status === "completed" ? "里程碑已由你确认完成" : "里程碑已保存");
+      if (dataMode === "database") { await workspaceApi.updateMilestone(milestone.id, { ...patch, expectedVersion: milestone.version }); await onChanged(); }
+      else onLocalChange({ ...goal, milestones: (goal.milestones ?? []).map((item) => item.id === milestone.id ? { ...item, ...patch, completedAt: patch.status === "completed" ? new Date().toISOString() : null, version: item.version + 1 } : item) });
+    }, patch.status === "completed" ? "里程碑已由你确认完成" : "里程碑已保存");
   }
 
   async function archiveMilestone(milestone: NonNullable<Goal["milestones"]>[number]) {
@@ -2307,7 +2470,7 @@ function GoalDetailModal({ goal, dataMode, onClose, onChanged, onLocalChange, on
         <div className="inline-create"><input value={outcomeText} onChange={(event) => setOutcomeText(event.target.value)} placeholder="添加结果指标" /><button type="button" aria-label="确认添加结果指标" onClick={addOutcome} disabled={busy}><Plus size={16} /></button></div>
       </div>
       <div className="detail-section"><div className="detail-heading"><strong>里程碑</strong><span>{goal.milestones?.length ?? 0} 个</span></div>
-        <div className="mini-list">{goal.milestones?.map((milestone) => <MilestoneRow key={milestone.id} milestone={milestone} disabled={busy} onSave={(next, status) => saveMilestone(milestone, next, status)} onArchive={() => archiveMilestone(milestone)} />)}{!goal.milestones?.length && <p>用阶段节点看见自己正在靠近目标。</p>}</div>
+        <div className="mini-list task-detail-list">{goal.milestones?.map((milestone) => <MilestoneRow key={milestone.id} milestone={milestone} tasks={goal.tasks ?? []} routines={goal.routines ?? []} disabled={busy} onSave={(patch) => saveMilestone(milestone, patch)} onArchive={() => archiveMilestone(milestone)} />)}{!goal.milestones?.length && <p>用可验证的阶段成果看见自己正在靠近目标。</p>}</div>
         <div className="inline-create"><input value={milestoneTitle} onChange={(event) => setMilestoneTitle(event.target.value)} placeholder="添加里程碑" /><button type="button" aria-label="确认添加里程碑" onClick={addMilestone} disabled={busy}><Plus size={16} /></button></div>
       </div>
       <div className="detail-section"><div className="detail-heading"><strong>行动任务</strong><span>{goal.tasks?.length ?? 0} 个</span></div>
@@ -2340,10 +2503,53 @@ function OutcomeRow({ outcome, disabled, onSave, onDelete }: { outcome: NonNulla
   return <div className={clsx("editable-work-item", completed && "confirmed-item")}><Target size={14} /><input aria-label={`编辑结果指标 ${outcome.description}`} value={value} onChange={(event) => setValue(event.target.value)} /><em>{completed ? "已确认" : "待确认"}</em><button type="button" disabled={disabled} onClick={() => void onSave(value.trim(), !completed)}>{completed ? "撤销确认" : "确认完成"}</button><button type="button" className="archive-mini" disabled={disabled} onClick={() => void onDelete()}>删除</button></div>;
 }
 
-function MilestoneRow({ milestone, disabled, onSave, onArchive }: { milestone: NonNullable<Goal["milestones"]>[number]; disabled: boolean; onSave: (title: string, status: string) => Promise<void>; onArchive: () => Promise<void> }) {
-  const [value, setValue] = useState(milestone.title);
+function MilestoneRow({ milestone, tasks, routines, disabled, onSave, onArchive }: {
+  milestone: NonNullable<Goal["milestones"]>[number];
+  tasks: NonNullable<Goal["tasks"]>;
+  routines: NonNullable<Goal["routines"]>;
+  disabled: boolean;
+  onSave: (patch: { title: string; description?: string; targetDate?: string | null; completionCriteria?: NonNullable<Goal["milestones"]>[number]["completionCriteria"]; status: string }) => Promise<void>;
+  onArchive: () => Promise<void>;
+}) {
+  const firstCriterion = milestone.completionCriteria?.items[0];
+  const [title, setTitle] = useState(milestone.title);
+  const [description, setDescription] = useState(milestone.description ?? "");
+  const [targetDate, setTargetDate] = useState(dateInputInTimezone(milestone.targetDate, currentTimezone()));
+  const [evaluator, setEvaluator] = useState(firstCriterion?.evaluator ?? "manual_only");
+  const [threshold, setThreshold] = useState(firstCriterion?.threshold ?? 1);
+  const [sourceId, setSourceId] = useState(firstCriterion?.sourceIds?.[0] ?? "");
   const completed = milestone.status === "completed";
-  return <div className={clsx("editable-work-item", completed && "confirmed-item")}><Flag size={14} /><input aria-label={`编辑里程碑 ${milestone.title}`} value={value} onChange={(event) => setValue(event.target.value)} /><em>{completed ? "已完成" : milestone.status === "ready_for_review" ? "待你确认" : "推进中"}</em><button type="button" disabled={disabled} onClick={() => void onSave(value.trim(), completed ? "pending" : "completed")}>{completed ? "撤销确认" : "确认完成"}</button><button type="button" className="archive-mini" disabled={disabled} onClick={() => void onArchive()}>归档</button></div>;
+
+  function criteria() {
+    if (evaluator === "manual_only") return null;
+    const task = tasks.find((item) => item.id === sourceId);
+    const routine = routines.find((item) => item.id === sourceId);
+    const label = evaluator === "linked_task_completed" ? `完成任务「${task?.title ?? "已选任务"}」`
+      : evaluator === "routine_completed_count" ? `${routine ? `Routine「${routine.title}」` : "Routine"}累计完成 ${threshold} 次`
+        : evaluator === "invested_minutes" ? `累计真实投入 ${threshold} 分钟`
+          : `累计 ${threshold} 个有效执行日`;
+    return { version: 1 as const, mode: "all" as const, items: [{ id: "primary", label, evaluator, ...(sourceId && (evaluator === "linked_task_completed" || evaluator === "routine_completed_count") ? { sourceIds: [sourceId] } : {}), ...(evaluator !== "linked_task_completed" ? { threshold } : {}) }] };
+  }
+
+  async function save(status = milestone.status) {
+    const completionCriteria = criteria();
+    if (evaluator === "linked_task_completed" && !sourceId) return;
+    await onSave({ title: title.trim(), description: description.trim() || undefined, targetDate: targetDate ? zonedDateTimeToIso(targetDate, "23:59", currentTimezone()) : null, completionCriteria, status });
+  }
+
+  return <details className={clsx("task-editor milestone-editor", completed && "is-completed")}>
+    <summary><Flag size={14} /><span>{milestone.title}</span><em>{completed ? "已确认完成" : milestone.completionCriteria ? "可自动检查" : "由你判断"}</em><ChevronRight size={14} /></summary>
+    <div>
+      <label>里程碑名称<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+      <label>可验证的阶段成果<textarea rows={2} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="跨过这个阶段后，什么事实会发生变化？" /></label>
+      <div className="field-row"><label>目标日期（可选）<input type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} /></label><label>检查方式<select value={evaluator} onChange={(event) => { setEvaluator(event.target.value as typeof evaluator); setSourceId(""); }}><option value="manual_only">由我判断</option><option value="linked_task_completed">关联任务已确认完成</option><option value="routine_completed_count">Routine 完成次数</option><option value="invested_minutes">真实投入分钟</option><option value="active_days">有效执行日</option></select></label></div>
+      {evaluator === "linked_task_completed" && <label>作为证据的任务<select value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">请选择任务</option>{tasks.map((task) => <option value={task.id} key={task.id}>{task.title}</option>)}</select></label>}
+      {evaluator === "routine_completed_count" && <div className="field-row"><label>限定 Routine（可选）<select value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">全部 Routine</option>{routines.map((routine) => <option value={routine.id} key={routine.id}>{routine.title}</option>)}</select></label><label>完成次数<input type="number" min="1" max="100000" value={threshold} onChange={(event) => setThreshold(Math.max(1, Number(event.target.value)))} /></label></div>}
+      {(evaluator === "invested_minutes" || evaluator === "active_days") && <label>{evaluator === "invested_minutes" ? "真实投入分钟阈值" : "有效执行日阈值"}<input type="number" min="1" max="100000" value={threshold} onChange={(event) => setThreshold(Math.max(1, Number(event.target.value)))} /></label>}
+      <p className="milestone-editor-note">{evaluator === "manual_only" ? "不会自动生成完成建议；你可以随时手动确认。" : "满足公开条件后只会生成检查建议，仍需你确认完成。"}</p>
+      <div className="task-editor-actions"><button type="button" className="archive-mini" disabled={disabled} onClick={() => void onArchive()}>归档里程碑</button><div><button type="button" className="soft-button small" disabled={disabled || !title.trim()} onClick={() => void save(completed ? "pending" : "completed")}>{completed ? "撤销完成" : "确认完成"}</button><button type="button" disabled={disabled || !title.trim() || evaluator === "linked_task_completed" && !sourceId} onClick={() => void save()}>{disabled ? "保存中…" : "保存里程碑"}</button></div></div>
+    </div>
+  </details>;
 }
 
 function TaskMultiSelect({ choices, value, onChange, disabled }: { choices: Array<{ id: string; title: string }>; value: string[]; onChange: (taskIds: string[]) => void; disabled?: boolean }) {
@@ -2608,15 +2814,159 @@ function ScheduleEditModal({ item, dataMode, goals, onClose, onSave, onDelete }:
   );
 }
 
-function FeedbackModal({ item, onClose, onSave }: { item: ScheduleItem; onClose: () => void; onSave: (input: { tag: string; result: "completed" | "not_completed" | "rescheduled"; actualMinutes?: number; actualStartedAt?: string; actualEndedAt?: string; quality?: string; obstacle?: string; nextAction?: string; note?: string; comfortable?: boolean; timeFit?: string }) => void }) {
-  const tags = ["顺畅", "有阻力", "勉强完成", "状态很好", "状态很差", "被打断", "没开始"];
-  const initialTag = feedbackLabel(item.execution?.tags?.[0] ?? item.feedback) || "顺畅";
-  const [tag, setTag] = useState(initialTag); const [result, setResult] = useState<"completed" | "not_completed" | "rescheduled">((item.execution?.result as "completed" | "not_completed" | "rescheduled") ?? "completed"); const [actualMinutes, setActualMinutes] = useState(item.execution?.actualMinutes ?? durationMinutes(item.start, item.end)); const [actualStartedAt, setActualStartedAt] = useState(toLocalInput(item.execution?.actualStartedAt) || `${item.date ?? currentDateKey()}T${item.start}`); const [actualEndedAt, setActualEndedAt] = useState(toLocalInput(item.execution?.actualEndedAt) || `${item.date ?? currentDateKey()}T${item.end}`); const [quality, setQuality] = useState(item.execution?.quality ?? ""); const [obstacle, setObstacle] = useState(item.execution?.obstacle ?? ""); const [nextAction, setNextAction] = useState(item.execution?.nextAction ?? ""); const [note, setNote] = useState(item.execution?.note ?? item.execution?.deviationReason ?? ""); const [comfortable, setComfortable] = useState(item.execution?.comfortable ?? true); const [timeFit, setTimeFit] = useState(item.execution?.timeFit ?? "good");
-  return <ModalShell title={item.execution ? "修正执行记录" : "这次做得怎么样？"} caption={`${item.start}–${item.end} · ${item.title}`} onClose={onClose}><div className="feedback-result"><button className={result === "completed" ? "active" : ""} onClick={() => setResult("completed")}>完成</button><button className={result === "not_completed" ? "active" : ""} onClick={() => { setResult("not_completed"); setTag("没开始"); }}>未完成</button><button className={result === "rescheduled" ? "active" : ""} onClick={() => setResult("rescheduled")}>改期</button></div><div className="feedback-grid">{tags.map((value) => <button className={tag === value ? "active" : ""} key={value} onClick={() => setTag(value)}>{value}</button>)}</div><div className="form-stack feedback-details"><div className="field-row"><label>实际开始<input type="datetime-local" value={actualStartedAt} onChange={(event) => setActualStartedAt(event.target.value)} /></label><label>实际结束<input type="datetime-local" value={actualEndedAt} onChange={(event) => setActualEndedAt(event.target.value)} /></label><label>实际耗时（分钟）<input type="number" min="0" max="1440" value={actualMinutes} onChange={(event) => setActualMinutes(Number(event.target.value))} /></label><label>完成质量<select value={quality} onChange={(event) => setQuality(event.target.value)}><option value="">未评价</option><option value="great">很好</option><option value="good">达到预期</option><option value="rough">比较粗糙</option></select></label><label>时间匹配<select value={timeFit} onChange={(event) => setTimeFit(event.target.value)}><option value="good">很合适</option><option value="neutral">一般</option><option value="poor">不合适</option></select></label></div><label>遇到的阻碍<textarea rows={2} value={obstacle} onChange={(event) => setObstacle(event.target.value)} placeholder="例如：任务入口不够清楚、被消息打断" /></label><label>下一步<textarea rows={2} value={nextAction} onChange={(event) => setNextAction(event.target.value)} placeholder="例如：先补一份接口清单，再继续实现" /></label><label className="boolean-choice"><input type="checkbox" checked={comfortable} onChange={(event) => setComfortable(event.target.checked)} />这个强度对我来说舒适</label><label>{result === "completed" ? "补充感受" : "偏差原因"}<textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder="可选，写下最有用的一点" /></label><div className="form-actions"><button className="soft-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="button" onClick={() => onSave({ tag, result, actualMinutes, actualStartedAt, actualEndedAt, quality: quality || undefined, obstacle: obstacle || undefined, nextAction: nextAction || undefined, note, comfortable, timeFit })}>{item.execution ? "保存修正" : "保存执行反馈"}</button></div></div></ModalShell>;
+type ExecutionFeedbackFormInput = {
+  result: ExecutionResult;
+  actualMinutes?: number;
+  actualStartedAt?: string;
+  actualEndedAt?: string;
+  quality?: ExecutionQuality;
+  focusState?: ExecutionFocusState;
+  note?: string;
+};
+
+export function FeedbackModal({ item, onClose, onSave }: {
+  item: ScheduleItem;
+  onClose: () => void;
+  onSave: (input: ExecutionFeedbackFormInput) => void | Promise<void>;
+}) {
+  const plannedMinutes = durationMinutes(item.start, item.end);
+  const initialResult = item.execution ? normalizeExecutionOutcome(item.execution.result) : "achieved";
+  const initialActualMinutes = initialResult === "no_progress" || initialResult === "rescheduled"
+    ? 0
+    : item.execution?.actualMinutes ?? plannedMinutes;
+  const [result, setResult] = useState<ExecutionResult>(initialResult);
+  const [actualMinutes, setActualMinutes] = useState<number | "">(initialActualMinutes);
+  const [actualStartedAt, setActualStartedAt] = useState(toLocalInput(item.execution?.actualStartedAt) || `${item.date ?? currentDateKey()}T${item.start}`);
+  const [actualEndedAt, setActualEndedAt] = useState(toLocalInput(item.execution?.actualEndedAt) || `${item.date ?? currentDateKey()}T${item.end}`);
+  const [quality, setQuality] = useState<ExecutionQuality | undefined>(normalizeExecutionQuality(item.execution?.quality));
+  const [focusState, setFocusState] = useState<ExecutionFocusState | undefined>(resolveExecutionFocusState(item.execution?.feedbackVersion, item.execution?.focusState, item.execution?.tags ?? []));
+  const [note, setNote] = useState(item.execution?.note ?? item.execution?.deviationReason ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const invested = result === "achieved" || result === "progressed";
+  const minutesValid = result !== "progressed" || (typeof actualMinutes === "number" && actualMinutes > 0);
+  const legacyItems = (item.execution?.feedbackVersion ?? 1) < EXECUTION_FEEDBACK_VERSION
+    ? [
+        item.execution?.obstacle && ["遇到的阻碍", item.execution.obstacle],
+        item.execution?.nextAction && ["原下一步", item.execution.nextAction],
+        item.execution?.deviationReason && ["原偏差原因", item.execution.deviationReason],
+        item.execution?.timeFit && ["原时间匹配", item.execution.timeFit],
+        item.execution?.comfortable != null && ["原强度反馈", item.execution.comfortable ? "舒适" : "不舒适"],
+        item.execution?.tags?.length && ["原节奏标签", item.execution.tags.map(feedbackLabel).join("、")],
+      ].filter((entry): entry is [string, string] => Boolean(entry))
+    : [];
+
+  function chooseResult(next: ExecutionResult) {
+    setResult(next);
+    setError(null);
+    if (next === "no_progress" || next === "rescheduled") setActualMinutes(0);
+    else if (next === "progressed" && item.execution?.actualMinutes == null) setActualMinutes("");
+    else if (next === "achieved" && (actualMinutes === "" || actualMinutes <= 0)) setActualMinutes(plannedMinutes);
+  }
+
+  async function submit() {
+    if (!minutesValid) {
+      setError("选择“有效推进”时，请补充这次真实投入的分钟数。");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave({
+        result,
+        actualMinutes: typeof actualMinutes === "number" ? actualMinutes : undefined,
+        actualStartedAt: invested ? actualStartedAt || undefined : undefined,
+        actualEndedAt: invested ? actualEndedAt || undefined : undefined,
+        quality: invested ? quality : undefined,
+        focusState: result === "rescheduled" ? undefined : focusState,
+        note: note.trim() || undefined,
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存失败，请稍后重试。");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <ModalShell title={item.execution ? "修正执行记录" : "这次做得怎么样？"} caption={`${item.start}–${item.end} · ${item.title}`} onClose={onClose}>
+      <div className="feedback-section">
+        <span className="feedback-section-label">执行结果</span>
+        <div className="feedback-result">
+          {executionOutcomeOptions.map((option) => (
+            <button type="button" className={result === option.value ? "active" : ""} aria-pressed={result === option.value} onClick={() => chooseResult(option.value)} key={option.value}>
+              <strong>{option.label}</strong>
+              <span>{option.description}</span>
+            </button>
+          ))}
+        </div>
+        <button type="button" className={clsx("feedback-reschedule", result === "rescheduled" && "active")} aria-pressed={result === "rescheduled"} onClick={() => chooseResult("rescheduled")}>
+          <RefreshCcw size={14} />
+          <span><strong>需要改期</strong><small>与本次执行结果分开处理</small></span>
+        </button>
+      </div>
+
+      {result !== "rescheduled" && (
+        <div className="feedback-section">
+          <span className="feedback-section-label">专注体验 <em>可跳过</em></span>
+          <div className="feedback-focus-grid">
+            {executionFocusOptions.map((option) => (
+              <button type="button" className={focusState === option.value ? "active" : ""} aria-pressed={focusState === option.value} onClick={() => setFocusState((current) => current === option.value ? undefined : option.value)} key={option.value}>
+                <strong>{option.label}</strong>
+                <span>{option.description}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {invested && (
+        <div className="feedback-section">
+          <span className="feedback-section-label">完成质量 <em>可跳过</em></span>
+          <div className="feedback-quality">
+            {executionQualityOptions.map((option) => <button type="button" className={quality === option.value ? "active" : ""} aria-pressed={quality === option.value} onClick={() => setQuality((current) => current === option.value ? undefined : option.value)} key={option.value}>{option.label}</button>)}
+          </div>
+        </div>
+      )}
+
+      <div className="form-stack feedback-details">
+        {invested && (
+          <details className="feedback-advanced" open={result === "progressed" && !minutesValid}>
+            <summary>实际投入 · {actualMinutes === "" ? "待填写" : `${actualMinutes} 分钟`}<span>调整</span></summary>
+            <div className="field-row">
+              <label>实际开始<input type="datetime-local" value={actualStartedAt} onChange={(event) => setActualStartedAt(event.target.value)} /></label>
+              <label>实际结束<input type="datetime-local" value={actualEndedAt} onChange={(event) => setActualEndedAt(event.target.value)} /></label>
+              <label>实际耗时（分钟）<input type="number" min="1" max="1440" value={actualMinutes} onChange={(event) => setActualMinutes(event.target.value === "" ? "" : Number(event.target.value))} required={result === "progressed"} /></label>
+            </div>
+          </details>
+        )}
+        <label>{result === "rescheduled" ? "改期说明（可选）" : "补充感受（可选）"}<textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder={result === "rescheduled" ? "为什么需要换个时间？" : "只写对之后调整节奏有用的一点"} /></label>
+        {legacyItems.length > 0 && (
+          <details className="feedback-legacy">
+            <summary>历史反馈（兼容保留）</summary>
+            <dl>{legacyItems.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+          </details>
+        )}
+        {error && <p className="form-error">{error}</p>}
+        <div className="form-actions">
+          <button className="soft-button" type="button" onClick={onClose} disabled={saving}>取消</button>
+          <button className="primary-button" type="button" onClick={() => void submit()} disabled={saving || !minutesValid}>{saving ? "保存中…" : item.execution ? "保存修正" : "保存执行反馈"}</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
 }
 
-function feedbackTag(tag: string) { return tag === "顺畅" ? "smooth" : tag === "有阻力" ? "resistant" : tag === "勉强完成" ? "barely_completed" : tag === "状态很好" ? "high_energy" : tag === "状态很差" ? "low_energy" : tag === "被打断" ? "interrupted" : "not_started"; }
 function feedbackLabel(tag?: string) { return tag === "smooth" ? "顺畅" : tag === "resistant" ? "有阻力" : tag === "barely_completed" ? "勉强完成" : tag === "high_energy" ? "状态很好" : tag === "low_energy" ? "状态很差" : tag === "interrupted" ? "被打断" : tag === "not_started" ? "没开始" : tag ?? ""; }
+function executionFeedbackSummary(item: ScheduleItem) {
+  if (!item.execution) return item.feedback ? `节奏反馈：${feedbackLabel(item.feedback)}` : "等待执行反馈。";
+  const labels = [
+    executionOutcomeLabel(item.execution.result),
+    executionFocusLabel(item.execution.focusState, item.execution.tags, item.execution.feedbackVersion),
+    executionQualityLabel(item.execution.quality),
+  ].filter(Boolean);
+  const note = item.execution.note ?? item.execution.deviationReason;
+  return `${labels.join(" · ")}${note ? `。${note}` : "。"}`;
+}
 function currentTimezone() { try { const stored = localStorage.getItem("rr.settings"); return stored ? (JSON.parse(stored) as UserSettings).timezone : "Asia/Shanghai"; } catch { return "Asia/Shanghai"; } }
 function todayLabel() { return new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long", timeZone: currentTimezone() }).format(new Date()).replace(/日(星期)/, "日 · $1"); }
 function localDateKey(date: Date) { return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: currentTimezone() }).format(date); }
@@ -2654,6 +3004,30 @@ function rhythmConditionLabels(value: unknown): string[] {
   return [timeLabel, notes].filter(Boolean);
 }
 function goalCategoryLabel(value: string) { return ({ project: "项目型目标", skill: "能力型目标", routine: "Routine 型目标", mixed: "混合型目标" } as Record<string, string>)[value] ?? value; }
+
+type GoalMilestone = NonNullable<Goal["milestones"]>[number];
+
+/**
+ * 同名里程碑曾由不同版本的初始化流程重复写入。详情页只合并展示，编辑页和数据库记录保持原样。
+ */
+function groupMilestonesForDisplay(milestones: GoalMilestone[]) {
+  const groups = new Map<string, GoalMilestone[]>();
+  for (const milestone of milestones) {
+    const key = milestone.title.trim().replace(/\s+/g, " ").toLocaleLowerCase("zh-CN");
+    groups.set(key, [...(groups.get(key) ?? []), milestone]);
+  }
+  return Array.from(groups, ([key, entries]) => {
+    const criteria = entries.flatMap((entry) => entry.completionCriteria?.items ?? []).filter((item, index, items) => items.findIndex((candidate) => `${candidate.evaluator}:${[...(candidate.sourceIds ?? [])].sort().join(",")}:${candidate.threshold ?? ""}:${candidate.label}` === `${item.evaluator}:${[...(item.sourceIds ?? [])].sort().join(",")}:${item.threshold ?? ""}:${item.label}`) === index);
+    return {
+      key,
+      entries,
+      title: entries[0]?.title ?? "未命名里程碑",
+      description: entries.find((entry) => entry.description)?.description,
+      completed: entries.every((entry) => entry.status === "completed"),
+      criteria,
+    };
+  });
+}
 function weekdayIndex(date: string) { return new Date(`${date}T12:00:00`).getDay(); }
 function reviewPeriodLabel(start: Date, endExclusive: Date) { const end = new Date(endExclusive); end.setDate(end.getDate() - 1); const format = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric" }); return `${format.format(start)}—${format.format(end)}`; }
 function zonedDateTimeToIso(date: string, time: string, timezone: string) { return zonedDateTimeToUtc(date, time, timezone).toISOString(); }

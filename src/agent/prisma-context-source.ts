@@ -3,6 +3,7 @@ import { zonedDateTimeToUtc, zonedParts } from "@/lib/timezone";
 import { listScheduleBlocks } from "@/server/services/schedule";
 import type { ContextDataSource } from "./context-builder";
 import type { ContextReference } from "./types";
+import { resolveExecutionFocusState } from "@/domain/execution-feedback";
 
 export class PrismaContextSource implements ContextDataSource {
   async getUser(userId: string) {
@@ -34,23 +35,57 @@ export class PrismaContextSource implements ContextDataSource {
       getDb().routineExecutionRecord.findMany({ where: { routine: { goal: { userId } }, updatedAt: { gte: from } }, include: { routine: { select: { id: true, title: true } } }, orderBy: { updatedAt: "desc" }, take: 100 }),
     ]);
     const data = [
-      ...scheduleExecutions,
-      ...routineExecutions.map((record) => ({
-        id: record.id,
-        source: "routine_occurrence" as const,
-        routineId: record.routineId,
-        routineTitle: record.routine.title,
-        occurrenceDate: record.occurrenceDate.toISOString(),
-        status: record.status,
-        plannedStartAt: record.plannedStartAt?.toISOString() ?? null,
-        plannedEndAt: record.plannedEndAt?.toISOString() ?? null,
-        rescheduledStartAt: record.rescheduledStartAt?.toISOString() ?? null,
-        rescheduledEndAt: record.rescheduledEndAt?.toISOString() ?? null,
-        actualMinutes: record.actualMinutes,
-        feedbackTags: record.feedbackTags,
-        note: record.note,
-        updatedAt: record.updatedAt.toISOString(),
-      })),
+      ...scheduleExecutions.map((record) => {
+        const isV2 = (record.feedbackVersion ?? 1) >= 2;
+        const feedback = record.rhythmFeedback;
+        return {
+          id: record.id,
+          source: "schedule" as const,
+          scheduleBlockId: record.scheduleBlockId,
+          scheduleTitle: record.scheduleBlock.title,
+          scheduledAt: record.scheduleBlock.startsAt.toISOString(),
+          taskId: record.scheduleBlock.taskId,
+          routineId: record.scheduleBlock.routineId,
+          result: record.result,
+          actualMinutes: record.actualMinutes,
+          quality: record.quality,
+          focusState: resolveExecutionFocusState(record.feedbackVersion, feedback?.focusState, feedback?.tags ?? []),
+          feedbackVersion: record.feedbackVersion,
+          note: feedback?.note,
+          ...(!isV2 && {
+            obstacle: record.obstacle,
+            deviationReason: record.deviationReason,
+            nextAction: record.nextAction,
+            feedbackTags: feedback?.tags ?? [],
+            comfortable: feedback?.comfortable,
+            timeFit: feedback?.timeFit,
+          }),
+          updatedAt: record.updatedAt.toISOString(),
+        };
+      }),
+      ...routineExecutions.map((record) => {
+        const isV2 = (record.feedbackVersion ?? 1) >= 2;
+        return {
+          id: record.id,
+          source: "routine_occurrence" as const,
+          routineId: record.routineId,
+          routineTitle: record.routine.title,
+          occurrenceDate: record.occurrenceDate.toISOString(),
+          status: record.status,
+          plannedStartAt: record.plannedStartAt?.toISOString() ?? null,
+          plannedEndAt: record.plannedEndAt?.toISOString() ?? null,
+          rescheduledStartAt: record.rescheduledStartAt?.toISOString() ?? null,
+          rescheduledEndAt: record.rescheduledEndAt?.toISOString() ?? null,
+          result: record.result ?? record.status,
+          actualMinutes: record.actualMinutes,
+          quality: record.quality,
+          focusState: resolveExecutionFocusState(record.feedbackVersion, record.focusState, record.feedbackTags),
+          feedbackVersion: record.feedbackVersion,
+          ...(!isV2 && { feedbackTags: record.feedbackTags }),
+          note: record.note,
+          updatedAt: record.updatedAt.toISOString(),
+        };
+      }),
     ];
     return { data, references: data.map((item) => ref("execution", item.id, undefined, "近期真实执行记录")) };
   }

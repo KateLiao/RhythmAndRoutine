@@ -60,11 +60,14 @@ export function ScheduleDetailDrawer({
             {item.changeReason && <div><dt>调整原因</dt><dd>{item.changeReason}</dd></div>}
           </dl>
           <div className="calendar-detail-actions">
-            {item.status !== "completed" && item.kind === "personal" && (
+            {!item.execution && item.status !== "completed" && item.kind === "personal" && (
               <button type="button" className="primary-button compact" onClick={() => onComplete(item.id)}><Check size={14} />完成</button>
             )}
-            {item.status !== "completed" && item.kind !== "personal" && (
+            {!item.execution && item.status !== "completed" && item.kind !== "personal" && (
               <button type="button" className="primary-button compact" onClick={() => onFeedback(item.id)}><ClipboardPen size={14} />记录执行</button>
+            )}
+            {item.execution && (
+              <button type="button" className="primary-button compact" onClick={() => onFeedback(item.id)}><ClipboardPen size={14} />修正记录</button>
             )}
             <button type="button" className="soft-button compact" onClick={() => onEdit(item.id)}><Pencil size={14} />编辑</button>
             <button type="button" className="soft-button compact danger-outline" onClick={() => onDelete(item.id)}><Trash2 size={14} />取消日程</button>

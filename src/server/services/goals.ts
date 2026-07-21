@@ -1,18 +1,21 @@
 import { GoalStatus, MilestoneStatus, RoutineStatus, ScheduleBlockStatus, TaskStatus } from "@/generated/prisma/enums";
-import type { Prisma } from "@/generated/prisma/client";
+import { Prisma } from "@/generated/prisma/client";
+import type { GoalExecutionOverview } from "@/domain/goal-achievements";
 import { getDb } from "@/lib/db";
 import { DomainError } from "@/server/api-response";
 import { ensureLocalUser } from "@/server/auth";
 import { createGoalSchema, createMilestoneSchema, createOutcomeSchema, createRoutineSchema, createTaskSchema, updateGoalSchema, updateMilestoneSchema, updateOutcomeSchema, updateRoutineSchema, updateTaskSchema } from "@/server/validation";
+import { evaluateGoalAchievementsBestEffort, getGoalExecutionOverviews, normalizeGoalLifecycleStatus } from "@/server/services/goal-execution";
+import { evaluateMilestoneSuggestionsBestEffort } from "@/server/services/milestone-suggestions";
 
-const goalStatusMap = { draft: GoalStatus.DRAFT, active: GoalStatus.ACTIVE, paused: GoalStatus.PAUSED, completed: GoalStatus.COMPLETED, archived: GoalStatus.ARCHIVED } as const;
+const goalStatusMap = { draft: GoalStatus.ACTIVE, active: GoalStatus.ACTIVE, paused: GoalStatus.PAUSED, completed: GoalStatus.COMPLETED, archived: GoalStatus.ARCHIVED } as const;
 const taskStatusMap = { draft: TaskStatus.DRAFT, ready: TaskStatus.READY, scheduled: TaskStatus.SCHEDULED, in_progress: TaskStatus.IN_PROGRESS, completed: TaskStatus.COMPLETED, blocked: TaskStatus.BLOCKED, cancelled: TaskStatus.CANCELLED, archived: TaskStatus.ARCHIVED } as const;
 const routineStatusMap = { draft: RoutineStatus.DRAFT, active: RoutineStatus.ACTIVE, paused: RoutineStatus.PAUSED, completed: RoutineStatus.COMPLETED, archived: RoutineStatus.ARCHIVED } as const;
-const milestoneStatusMap = { pending: MilestoneStatus.PENDING, ready_for_review: MilestoneStatus.READY_FOR_REVIEW, completed: MilestoneStatus.COMPLETED, rejected: MilestoneStatus.REJECTED, archived: MilestoneStatus.ARCHIVED } as const;
+const milestoneStatusMap = { pending: MilestoneStatus.PENDING, completed: MilestoneStatus.COMPLETED, rejected: MilestoneStatus.REJECTED, archived: MilestoneStatus.ARCHIVED } as const;
 
 const goalInclude = {
   outcomes: { where: { archivedAt: null } },
-  milestones: { orderBy: { position: "asc" as const } },
+  milestones: { orderBy: { position: "asc" as const }, include: { reviewSuggestions: { orderBy: { suggestedAt: "desc" as const }, take: 12 } } },
   tasks: { where: { archivedAt: null }, orderBy: { position: "asc" as const } },
   routines: { where: { archivedAt: null }, include: { executionRecords: { orderBy: { occurrenceDate: "desc" as const }, take: 60 } } },
   _count: { select: { scheduleBlocks: true } },
@@ -21,23 +24,26 @@ const goalInclude = {
 export async function listGoals(userId: string) {
   await ensureLocalUser();
   const goals = await getDb().goal.findMany({ where: { userId, archivedAt: null }, include: goalInclude, orderBy: { updatedAt: "desc" } });
-  return goals.map(serializeGoal);
+  const overviews = await getGoalExecutionOverviews(userId, goals);
+  return goals.map((goal) => serializeGoal(goal, overviews.get(goal.id)));
 }
 
 export async function getGoal(userId: string, id: string) {
   const goal = await getDb().goal.findFirst({ where: { id, userId, archivedAt: null }, include: goalInclude });
   if (!goal) throw new DomainError("GOAL_NOT_FOUND", "没有找到这个目标。", 404);
-  return serializeGoal(goal);
+  const overviews = await getGoalExecutionOverviews(userId, [goal]);
+  return serializeGoal(goal, overviews.get(goal.id));
 }
 
 export async function createGoal(userId: string, raw: unknown) {
   await ensureLocalUser();
   const input = createGoalSchema.parse(raw);
   const goal = await getDb().goal.create({
-    data: { userId, title: input.title, description: input.description, category: input.category, project: input.project, skill: input.skill, targetDate: input.targetDate ? new Date(input.targetDate) : null, status: GoalStatus.DRAFT },
+    data: { userId, title: input.title, description: input.description, category: input.category, project: input.project, skill: input.skill, targetDate: input.targetDate ? new Date(input.targetDate) : null, status: GoalStatus.ACTIVE },
     include: goalInclude,
   });
-  return serializeGoal(goal);
+  const overviews = await getGoalExecutionOverviews(userId, [goal]);
+  return serializeGoal(goal, overviews.get(goal.id));
 }
 
 export async function updateGoal(userId: string, id: string, raw: unknown) {
@@ -81,6 +87,7 @@ export async function updateOutcome(userId: string, outcomeId: string, raw: unkn
   if (!result.count) throw new DomainError("VERSION_CONFLICT", "结果指标已经发生变化，请刷新后再保存。", 409);
   const outcome = await getDb().outcome.findFirst({ where: { id: outcomeId, goal: { userId } } });
   if (!outcome) throw new DomainError("OUTCOME_NOT_FOUND", "没有找到这个结果指标。", 404);
+  if (input.completed) await evaluateGoalAchievementsBestEffort([outcome.goalId]);
   return outcome;
 }
 
@@ -93,18 +100,36 @@ export async function createMilestone(userId: string, goalId: string, raw: unkno
   await assertGoalOwner(userId, goalId);
   const input = createMilestoneSchema.parse(raw);
   const last = await getDb().milestone.aggregate({ where: { goalId }, _max: { position: true } });
-  return getDb().milestone.create({ data: { goalId, ...input, position: (last._max.position ?? -1) + 1 } });
+  const milestone = await getDb().milestone.create({ data: { goalId, title: input.title, description: input.description, targetDate: input.targetDate ? new Date(input.targetDate) : null, ...(input.completionCriteria !== undefined && { completionCriteria: input.completionCriteria === null ? Prisma.JsonNull : input.completionCriteria }), position: (last._max.position ?? -1) + 1 } });
+  if (input.completionCriteria) await evaluateMilestoneSuggestionsBestEffort([goalId]);
+  return milestone;
 }
 
 export async function updateMilestone(userId: string, milestoneId: string, raw: unknown) {
   const input = updateMilestoneSchema.parse(raw);
-  const result = await getDb().milestone.updateMany({
-    where: { id: milestoneId, version: input.expectedVersion, goal: { userId, archivedAt: null } },
-    data: { ...(input.title !== undefined && { title: input.title }), ...(input.description !== undefined && { description: input.description }), ...(input.status !== undefined && { status: milestoneStatusMap[input.status], completedAt: input.status === "completed" ? new Date() : null }), version: { increment: 1 } },
+  const result = await getDb().$transaction(async (tx) => {
+    const updated = await tx.milestone.updateMany({
+      where: { id: milestoneId, version: input.expectedVersion, goal: { userId, archivedAt: null } },
+      data: { ...(input.title !== undefined && { title: input.title }), ...(input.description !== undefined && { description: input.description }), ...(input.targetDate !== undefined && { targetDate: input.targetDate ? new Date(input.targetDate) : null }), ...(input.completionCriteria !== undefined && { completionCriteria: input.completionCriteria === null ? Prisma.JsonNull : input.completionCriteria }), ...(input.status !== undefined && { status: milestoneStatusMap[input.status], completedAt: input.status === "completed" ? new Date() : null }), version: { increment: 1 } },
+    });
+    if (updated.count && input.status) {
+      await tx.milestone.update({ where: { id: milestoneId }, data: { completedBy: input.status === "completed" ? { connect: { id: userId } } : { disconnect: true } } });
+    }
+    if (updated.count && (input.status === "completed" || input.completionCriteria !== undefined)) {
+      await tx.milestoneReviewSuggestion.updateMany({
+        where: { milestoneId, status: { in: ["PENDING", "SNOOZED"] } },
+        data: { status: "SUPERSEDED", decidedAt: new Date(), decisionReason: input.status === "completed" ? "里程碑已由用户直接确认完成" : "里程碑完成标准已更新" },
+      });
+    }
+    return updated;
   });
   if (!result.count) throw new DomainError("VERSION_CONFLICT", "里程碑已经发生变化，请刷新后再保存。", 409);
   const milestone = await getDb().milestone.findFirst({ where: { id: milestoneId, goal: { userId } } });
   if (!milestone) throw new DomainError("MILESTONE_NOT_FOUND", "没有找到这个里程碑。", 404);
+  await Promise.all([
+    input.status === "completed" ? evaluateGoalAchievementsBestEffort([milestone.goalId]) : Promise.resolve(),
+    input.status !== "completed" && input.completionCriteria !== undefined ? evaluateMilestoneSuggestionsBestEffort([milestone.goalId]) : Promise.resolve(),
+  ]);
   return milestone;
 }
 
@@ -218,13 +243,14 @@ async function assertGoalOwner(userId: string, goalId: string) {
   if (!goal) throw new DomainError("GOAL_NOT_FOUND", "没有找到关联目标。", 404);
 }
 
-function serializeGoal(goal: Prisma.GoalGetPayload<{ include: typeof goalInclude }>) {
+function serializeGoal(goal: Prisma.GoalGetPayload<{ include: typeof goalInclude }>, execution?: GoalExecutionOverview) {
   return {
-    ...goal, status: goal.status.toLowerCase(), targetDate: goal.targetDate?.toISOString() ?? null,
+    ...goal, status: normalizeGoalLifecycleStatus(goal.status), targetDate: goal.targetDate?.toISOString() ?? null,
     createdAt: goal.createdAt.toISOString(), updatedAt: goal.updatedAt.toISOString(),
     outcomes: goal.outcomes.map((outcome) => ({ ...outcome, completedAt: outcome.completedAt?.toISOString() ?? null, createdAt: outcome.createdAt.toISOString(), updatedAt: outcome.updatedAt.toISOString() })),
-    milestones: goal.milestones.map((milestone) => ({ ...milestone, status: milestone.status.toLowerCase(), targetDate: milestone.targetDate?.toISOString() ?? null, completedAt: milestone.completedAt?.toISOString() ?? null, createdAt: milestone.createdAt.toISOString(), updatedAt: milestone.updatedAt.toISOString() })),
+    milestones: goal.milestones.map((milestone) => ({ ...milestone, status: milestone.status === MilestoneStatus.READY_FOR_REVIEW ? "pending" : milestone.status.toLowerCase(), targetDate: milestone.targetDate?.toISOString() ?? null, completedAt: milestone.completedAt?.toISOString() ?? null, createdAt: milestone.createdAt.toISOString(), updatedAt: milestone.updatedAt.toISOString(), reviewSuggestions: milestone.reviewSuggestions.map((suggestion) => ({ ...suggestion, status: suggestion.status.toLowerCase(), suggestedAt: suggestion.suggestedAt.toISOString(), snoozedUntil: suggestion.snoozedUntil?.toISOString() ?? null, decidedAt: suggestion.decidedAt?.toISOString() ?? null, createdAt: suggestion.createdAt.toISOString(), updatedAt: suggestion.updatedAt.toISOString() })) })),
     tasks: goal.tasks.map(serializeTask), routines: goal.routines.map(serializeRoutine),
+    execution,
   };
 }
 

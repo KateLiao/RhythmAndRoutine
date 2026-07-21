@@ -1,0 +1,10 @@
+{"id":"performance.001","kind":"context","calls":5,"delayMs":12}
+{"id":"performance.002","kind":"context","calls":5,"delayMs":13}
+{"id":"performance.003","kind":"context","calls":5,"delayMs":14}
+{"id":"performance.004","kind":"context","calls":5,"delayMs":15}
+{"id":"performance.005","kind":"context","calls":5,"delayMs":16}
+{"id":"performance.006","kind":"tool_batch","calls":3,"delayMs":17}
+{"id":"performance.007","kind":"tool_batch","calls":3,"delayMs":18}
+{"id":"performance.008","kind":"tool_batch","calls":3,"delayMs":19}
+{"id":"performance.009","kind":"tool_batch","calls":3,"delayMs":20}
+{"id":"performance.010","kind":"tool_batch","calls":3,"delayMs":21}

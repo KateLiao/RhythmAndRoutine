@@ -1,0 +1,5 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify schema-to-UI round trips, identifiers, null/legacy behavior and migration invariants."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Check that investment, evidence and state projection logic has one source of truth."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify event order, component state, accessibility and responsive achievement UX."}
+{"file":".trellis/tasks/07-20-v0-4-0-goal-execution/research/achievement-data-snapshot.md","reason":"Compare dry-run achievement results with the verified current-data expectations."}
+{"file":".trellis/tasks/07-20-v0-4-0-goal-execution/research/goal-status-decision.md","reason":"Verify only DRAFT to ACTIVE changes and that no readiness behavior remains."}

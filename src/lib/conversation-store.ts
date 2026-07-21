@@ -68,8 +68,12 @@ export type ConversationSession = {
   summary?: string;
   summarizedThroughMessageId?: string;
   runIds: string[];
+  /** Run 链只在当前上下文 revision 内续接；历史 run 仍保留用于展示和审计。 */
+  runRevisions: Record<string, number>;
   activeRunId?: string;
   pendingChangeSetIds: string[];
+  /** ChangeSet 只有在创建它的上下文 revision 内才会被自动续接；跨边界后仍保留为可见、可审批历史。 */
+  pendingChangeSetRevisions: Record<string, number>;
   contextScope?: ContextScope;
 };
 
@@ -97,7 +101,9 @@ function createEmptySession(): ConversationSession {
     createdAt: new Date().toISOString(),
     messages: [],
     runIds: [],
+    runRevisions: {},
     pendingChangeSetIds: [],
+    pendingChangeSetRevisions: {},
   };
 }
 
@@ -143,15 +149,22 @@ function load(): ConversationDataV2 {
     if (rawV2) {
       const parsed = JSON.parse(rawV2) as ConversationDataV2;
       if (parsed?.version === 2 && parsed.session?.id) {
+        const revision = parsed.session.revision ?? 1;
+        const runIds = parsed.session.runIds ?? [];
+        const pendingChangeSetIds = parsed.session.pendingChangeSetIds ?? [];
         return {
           ...parsed,
           session: {
             ...createEmptySession(),
             ...parsed.session,
             messages: parsed.session.messages ?? [],
-            runIds: parsed.session.runIds ?? [],
-            pendingChangeSetIds: parsed.session.pendingChangeSetIds ?? [],
-            revision: parsed.session.revision ?? 1,
+            runIds,
+            runRevisions: parsed.session.runRevisions
+              ?? Object.fromEntries(runIds.map((id) => [id, revision])),
+            pendingChangeSetIds,
+            pendingChangeSetRevisions: parsed.session.pendingChangeSetRevisions
+              ?? Object.fromEntries(pendingChangeSetIds.map((id) => [id, revision])),
+            revision,
           },
         };
       }
@@ -254,6 +267,7 @@ export function clearContext(options?: {
   label?: string;
   detail?: string;
   kind?: StoredBoundary["kind"];
+  undoable?: boolean;
 }): { boundary: StoredBoundary; revision: number; boundaryMessageId?: string } {
   const label = options?.label ?? "上方内容已移出上下文，小律接下来不会参考上面的对话";
   const kind = options?.kind ?? "context_clear";
@@ -269,7 +283,7 @@ export function clearContext(options?: {
       afterMessageId: boundaryMessageId,
       label,
       detail: options?.detail,
-      undoable: true,
+      undoable: options?.undoable ?? true,
     };
     const boundaryMessage: StoredMessage = {
       id: boundary.id,
@@ -312,13 +326,22 @@ export function undoClearContext(): boolean {
   updateSession((current) => {
     const messages = current.messages.slice(0, -1);
     const previousBoundary = [...messages].reverse().find((message) => message.kind === "boundary");
+    const restoredRevision = current.revision + 1;
+    const pendingChangeSetRevisions = Object.fromEntries(
+      Object.entries(current.pendingChangeSetRevisions).map(([id, revision]) => [id, revision === current.revision - 1 ? restoredRevision : revision]),
+    );
+    const runRevisions = Object.fromEntries(
+      Object.entries(current.runRevisions).map(([id, revision]) => [id, revision === current.revision - 1 ? restoredRevision : revision]),
+    );
     return {
       ...current,
-      revision: current.revision + 1,
+      revision: restoredRevision,
       contextBoundaryMessageId: previousBoundary?.boundary?.afterMessageId,
       summary: undefined,
       summarizedThroughMessageId: undefined,
       messages,
+      runRevisions,
+      pendingChangeSetRevisions,
     };
   });
   return true;
@@ -374,11 +397,17 @@ export function syncContextScope(
   }
 
   if (shouldAutoClear && (goalChanged || (isFirstScope && scope.goalId != null))) {
-    const title = goalTitle?.trim() || (scope.goalId ? "新目标" : "未选择目标");
+    const title = goalTitle?.trim() || "新目标";
+    const leavingGoalContext = scope.goalId == null;
     const { boundary } = clearContext({
       kind: "goal_switch",
-      label: `已切换到「${title}」，上方对话不再作为上下文`,
-      detail: "小律接下来会围绕当前目标理解你的请求。",
+      undoable: false,
+      label: leavingGoalContext
+        ? "已离开目标上下文，上方对话不再作为上下文"
+        : `已切换到「${title}」，上方对话不再作为上下文`,
+      detail: leavingGoalContext
+        ? "小律接下来不会默认关联任何目标；需要时请在消息中点名。"
+        : "小律接下来会围绕当前目标理解你的请求。",
     });
     updateSession((session) => ({ ...session, contextScope: scope }));
     return { cleared: true, goalChanged: true, boundary };
@@ -515,7 +544,16 @@ export function trackRunStarted(runId: string): void {
     ...session,
     activeRunId: runId,
     runIds: session.runIds.includes(runId) ? session.runIds : [...session.runIds, runId],
+    runRevisions: { ...session.runRevisions, [runId]: session.revision },
   }));
+}
+
+/**
+ * 返回当前上下文 revision 内最近一次 Run，避免首页的新指令挂到旧目标运行链。
+ */
+export function getActiveParentRunId(): string | undefined {
+  const session = load().session;
+  return [...session.runIds].reverse().find((id) => session.runRevisions[id] === session.revision);
 }
 
 /**
@@ -539,7 +577,17 @@ export function trackPendingChangeSet(changeSetId: string): void {
     pendingChangeSetIds: session.pendingChangeSetIds.includes(changeSetId)
       ? session.pendingChangeSetIds
       : [...session.pendingChangeSetIds, changeSetId],
+    pendingChangeSetRevisions: { ...session.pendingChangeSetRevisions, [changeSetId]: session.revision },
   }));
+}
+
+/**
+ * 返回可在当前上下文中自动续接的最新待确认 ChangeSet。
+ * 清空上下文或离开目标详情会 bump revision，因此旧草案不会影响新的首页指令。
+ */
+export function getActivePendingChangeSetId(): string | undefined {
+  const session = load().session;
+  return [...session.pendingChangeSetIds].reverse().find((id) => session.pendingChangeSetRevisions[id] === session.revision);
 }
 
 /**
@@ -547,10 +595,15 @@ export function trackPendingChangeSet(changeSetId: string): void {
  * @param changeSetId - ChangeSet id
  */
 export function untrackPendingChangeSet(changeSetId: string): void {
-  updateSession((session) => ({
-    ...session,
-    pendingChangeSetIds: session.pendingChangeSetIds.filter((id) => id !== changeSetId),
-  }));
+  updateSession((session) => {
+    const pendingChangeSetRevisions = { ...session.pendingChangeSetRevisions };
+    delete pendingChangeSetRevisions[changeSetId];
+    return {
+      ...session,
+      pendingChangeSetIds: session.pendingChangeSetIds.filter((id) => id !== changeSetId),
+      pendingChangeSetRevisions,
+    };
+  });
 }
 
 /**

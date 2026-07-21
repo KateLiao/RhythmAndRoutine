@@ -7,3 +7,7 @@ node_modules/
 tsconfig.tsbuildinfo
 src/generated/prisma/
 tmp/
+
+# Local migration safety snapshots may contain private workspace data.
+.trellis/tasks/**/research/backups/
+.trellis/archive/**/research/backups/

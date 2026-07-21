@@ -1,0 +1,5 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify the complete fact-to-suggestion-to-confirmation data flow and legacy round trip."}
+{"file":".trellis/spec/frontend/agent-runtime.md","reason":"Verify Agent safety, evidence and event behavior in cross-module journeys."}
+{"file":".trellis/spec/frontend/agent-schedule-planning.md","reason":"Verify schedule planning remains safe after parallel read execution."}
+{"file":".trellis/tasks/07-20-v0-4-0-goal-execution/research/goal-status-decision.md","reason":"Enforce migration invariants and remove all readiness behavior."}
+{"file":".trellis/tasks/07-20-v0-4-0-agent-quality-efficiency/research/capability-matrix.md","reason":"Ensure release QA maps back to verified current capabilities."}

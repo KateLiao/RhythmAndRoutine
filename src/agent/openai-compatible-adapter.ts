@@ -20,7 +20,7 @@ type StreamChunk = {
   error?: { message?: string };
 };
 
-type PendingToolCall = { id: string; name: string; arguments: string };
+type PendingToolCall = { index: number; id: string; name: string; arguments: string };
 
 export class OpenAICompatibleAdapter implements ModelAdapter {
   readonly provider: string;
@@ -99,7 +99,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
         }
 
         for (const call of delta?.tool_calls ?? []) {
-          const current = pendingTools.get(call.index) ?? { id: call.id ?? "", name: call.function?.name ?? "", arguments: "" };
+          const current = pendingTools.get(call.index) ?? { index: call.index, id: call.id ?? "", name: call.function?.name ?? "", arguments: "" };
           if (call.id) current.id = call.id;
           if (call.function?.name) current.name = call.function.name;
           if (call.function?.arguments) current.arguments += call.function.arguments;
@@ -112,7 +112,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
       }
     }
 
-    for (const call of [...pendingTools.values()].sort((a, b) => a.id.localeCompare(b.id))) {
+    for (const call of [...pendingTools.values()].sort((a, b) => a.index - b.index)) {
       if (!call.name) continue;
       let input: unknown = {};
       try { input = JSON.parse(call.arguments || "{}"); } catch { input = {}; }
@@ -193,11 +193,13 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
         throw new Error(message);
       }
       const body = await response.json() as CompletionResponse;
+      if (body.usage) request.onUsage?.({ inputTokens: body.usage.prompt_tokens ?? 0, outputTokens: body.usage.completion_tokens ?? 0 });
       const rawContent = body.choices?.[0]?.message?.content ?? "";
       const content = extractJsonText(rawContent);
       try {
         const parsed = JSON.parse(content) as unknown;
-        const value = request.schema.parse(parsed) as T;
+        const normalized = request.normalize ? request.normalize(parsed) : parsed;
+        const value = request.schema.parse(normalized) as T;
         console.info("[llm] generateObject ok", {
           provider: this.provider,
           model,

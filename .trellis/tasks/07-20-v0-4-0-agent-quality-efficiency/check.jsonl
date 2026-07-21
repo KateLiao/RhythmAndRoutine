@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/agent-runtime.md","reason":"Verify paired tool protocol, audit/reasoning tracks, event arrival order and budget persistence."}
+{"file":".trellis/spec/frontend/agent-schedule-planning.md","reason":"Verify explicit evidence still enforces schedule window and candidate validation contracts."}
+{"file":".trellis/spec/guides/llm-structured-output.md","reason":"Check schema validation, timeout, provider behavior and deterministic fallback."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check live and persisted event decoding, versioned evidence and old-record compatibility."}
+{"file":".trellis/tasks/07-20-v0-4-0-agent-quality-efficiency/research/capability-matrix.md","reason":"Ensure tests and traces cover every current capability and tool boundary."}

@@ -130,7 +130,7 @@ export function formatChangeOperationFieldValue(key: string, value: unknown, goa
     return humanizeRecurrenceRule(String(value));
   }
   if (key === "status") {
-    const statusLabels: Record<string, string> = { active: "推进中", draft: "待澄清", paused: "暂停", planned: "已计划", completed: "已完成", archived: "已归档", ready: "就绪", scheduled: "已安排" };
+    const statusLabels: Record<string, string> = { active: "推进中", draft: "草稿", paused: "暂停", planned: "已计划", completed: "已完成", archived: "已归档", ready: "就绪", scheduled: "已安排" };
     return statusLabels[String(value)] ?? String(value);
   }
   if (key === "estimatedMinutes" || key === "durationMinutes" || key === "targetMinutes" || key === "duration") {
@@ -353,6 +353,11 @@ export function normalizeAgentChangePayload(entity: string, payload: Record<stri
   if (!normalized.targetDate && typeof normalized.dueDate === "string") {
     normalized.targetDate = normalized.dueDate;
   }
+  if (!normalized.targetDate && typeof normalized.deadline === "string") {
+    normalized.targetDate = normalized.deadline;
+  }
+  delete normalized.dueDate;
+  delete normalized.deadline;
 
   if (!normalized.description && typeof normalized.summary === "string" && normalized.summary.trim()) {
     normalized.description = normalized.summary.trim();

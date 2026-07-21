@@ -14,6 +14,13 @@ export class PrismaRunStore implements AgentRunStore {
         modelProvider: input.provider, modelId: input.model, status: AgentRunStatus.RUNNING,
         maxSteps: input.maxSteps, maxTokens: input.maxTokens,
         inputSummary: input.inputSummary?.slice(0, 2000), startedAt: new Date(),
+        intentResolution: input.intentResolution === undefined ? undefined : json(input.intentResolution),
+        executionPlan: input.executionPlan === undefined ? undefined : json(input.executionPlan),
+        contextMetrics: input.contextMetrics === undefined ? undefined : json(input.contextMetrics),
+        conversationId: input.conversationId,
+        parentRunId: input.parentRunId,
+        continuationKind: input.continuationKind,
+        continuationState: input.continuationState === undefined ? undefined : json(input.continuationState),
         contextItems: { create: manifest.flatMap((item) => typeof item.entityId === "string" ? [{ entityType: String(item.entityType ?? "unknown"), entityId: item.entityId, version: typeof item.version === "number" ? item.version : undefined, reason: String(item.reason ?? "Agent 上下文") }] : []) },
       },
       select: { id: true },
@@ -29,7 +36,8 @@ export class PrismaRunStore implements AgentRunStore {
       inputSummary: summarize(step.input), outputSummary: summarize(step.output), durationMs: step.durationMs,
       inputTokens: step.inputTokens, outputTokens: step.outputTokens,
       toolCalls: step.toolCalls?.length ? { create: step.toolCalls.map((call, index) => ({
-        toolName: call.name, risk: riskMap[call.risk], input: json(call.input), output: call.output === undefined ? undefined : json(call.output),
+        toolName: call.name, toolCallId: call.toolCallId, batchId: call.batchId, completionOrder: call.completionOrder,
+        risk: riskMap[call.risk], input: json(call.input), output: call.output === undefined ? undefined : json(call.output),
         idempotencyKey: `${runId}:${step.sequence}:${index}`, status: call.ok ? "completed" : "failed", errorCode: call.errorCode, durationMs: call.durationMs,
       })) } : undefined,
     } });

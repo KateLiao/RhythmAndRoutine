@@ -1,8 +1,22 @@
+import {
+  definitionsForModules,
+  deriveGoalActionHint,
+  derivePlanningHints,
+  evaluateAchievement,
+  resolveAchievementModules,
+  type AchievementView,
+  type GoalExecutionFacts,
+  type GoalExecutionOverview,
+  type GoalLifecycleStatus,
+} from "@/domain/goal-achievements";
+import { evaluateMilestoneCriteria, type MilestoneCriteria } from "@/domain/milestone-suggestions";
+import { zonedDateKey, zonedDateTimeToUtc, zonedPeriod } from "@/lib/timezone";
+
 export type Goal = {
   id: string;
   title: string;
   description: string;
-  status: "active" | "draft" | "paused";
+  status: GoalLifecycleStatus;
   color: "violet" | "sage" | "coral";
   weeklyMinutes: number;
   completedMinutes: number;
@@ -10,10 +24,25 @@ export type Goal = {
   tasksTotal: number;
   version?: number;
   category?: "project" | "skill" | "routine" | "mixed"; project?: string | null; skill?: string | null; targetDate?: string | null;
-  tasks?: Array<{ id: string; title: string; status: string; version: number; estimatedMinutes?: number | null; intent?: string | null; completionCriteria?: string[] | null; suggestedSteps?: string[] | null; energyLevel?: string | null; focusLevel?: string | null; rhythmConditions?: unknown; milestoneId?: string | null; completionRecord?: TaskCompletionRecord | null }>;
+  execution?: GoalExecutionOverview;
+  achievementHistory?: Array<{ achievementId: string; unlockedAt: string }>;
+  tasks?: Array<{ id: string; title: string; status: string; version: number; estimatedMinutes?: number | null; intent?: string | null; completionCriteria?: string[] | null; suggestedSteps?: string[] | null; energyLevel?: string | null; focusLevel?: string | null; rhythmConditions?: unknown; milestoneId?: string | null; completedAt?: string | null; completionRecord?: TaskCompletionRecord | null }>;
   routines?: Array<{ id: string; title: string; status: string; version: number; recurrenceRule: string; startDate: string; endDate?: string | null; durationMinutes: number; preferredStartTime?: string | null; preferredEndTime?: string | null; preferredTimeOfDay?: string | null; priority?: string; displayMode?: string; minimumVersion?: string | null; description?: string | null; executionRecords?: RoutineExecution[] }>;
   outcomes?: Array<{ id: string; description: string; completedAt?: string | null; version: number }>;
-  milestones?: Array<{ id: string; title: string; description?: string | null; status: string; version: number }>;
+  milestones?: Array<{ id: string; title: string; description?: string | null; status: string; version: number; targetDate?: string | null; completedAt?: string | null; completionCriteria?: MilestoneCriteria | null; reviewSuggestions?: MilestoneReviewSuggestion[] }>;
+};
+
+export type MilestoneReviewSuggestion = {
+  id: string;
+  milestoneId: string;
+  milestoneVersion: number;
+  reason: string;
+  status: "pending" | "snoozed" | "dismissed" | "accepted" | "superseded";
+  suggestedAt: string;
+  snoozedUntil?: string | null;
+  decisionReason?: string | null;
+  decidedAt?: string | null;
+  evidence?: unknown;
 };
 
 export type TaskCompletionRecord = {
@@ -45,10 +74,10 @@ export type ScheduleItem = {
   displayMode?: string;
   changeReason?: string | null;
   rescheduledFromId?: string | null;
-  execution?: { result: string; actualMinutes?: number | null; actualStartedAt?: string | null; actualEndedAt?: string | null; quality?: string | null; obstacle?: string | null; deviationReason?: string | null; nextAction?: string | null; note?: string | null; comfortable?: boolean | null; timeFit?: string | null; tags: string[] };
+  execution?: { result: string; feedbackVersion?: number; actualMinutes?: number | null; actualStartedAt?: string | null; actualEndedAt?: string | null; quality?: string | null; focusState?: string | null; obstacle?: string | null; deviationReason?: string | null; nextAction?: string | null; note?: string | null; comfortable?: boolean | null; timeFit?: string | null; tags: string[] };
 };
 
-export type RoutineExecution = { id: string; occurrenceDate: string; plannedStartAt?: string | null; plannedEndAt?: string | null; status: string; actualMinutes?: number | null; feedbackTags: string[]; note?: string | null; rescheduledStartAt?: string | null; rescheduledEndAt?: string | null; createdAt: string; updatedAt: string };
+export type RoutineExecution = { id: string; occurrenceDate: string; plannedStartAt?: string | null; plannedEndAt?: string | null; status: string; result?: string | null; feedbackVersion?: number; actualMinutes?: number | null; quality?: string | null; focusState?: string | null; feedbackTags: string[]; note?: string | null; rescheduledStartAt?: string | null; rescheduledEndAt?: string | null; createdAt: string; updatedAt: string };
 
 export const initialGoals: Goal[] = [
   {
@@ -69,7 +98,7 @@ export const initialGoals: Goal[] = [
     routines: [{ id: "routine-review", title: "一天的轻回顾", status: "active", version: 1, recurrenceRule: "FREQ=DAILY;BYHOUR=21;BYMINUTE=30", startDate: new Date().toISOString(), durationMinutes: 15, preferredStartTime: "21:30", displayMode: "subtle", executionRecords: [] }],
     outcomes: [{ id: "outcome-mvp", description: "完成一个可日常使用的 AI Native 个人目标推进产品 MVP", completedAt: null, version: 1 }],
     milestones: [
-      { id: "milestone-core", title: "基础业务闭环", description: "手动创建目标、安排日程并记录执行反馈。", status: "ready_for_review", version: 1 },
+      { id: "milestone-core", title: "基础业务闭环", description: "手动创建目标、安排日程并记录执行反馈。", status: "pending", version: 1 },
       { id: "milestone-agent", title: "小律规划与调整", description: "AI 建议经确认后进入正式计划。", status: "pending", version: 1 },
     ],
   },
@@ -89,7 +118,7 @@ export const initialGoals: Goal[] = [
     id: "english",
     title: "英语项目表达",
     description: "能自然讲清自己的项目经历和产品判断。",
-    status: "draft",
+    status: "active",
     color: "coral",
     weeklyMinutes: 120,
     completedMinutes: 0,
@@ -172,6 +201,185 @@ export function enrichGoalsWithScheduleStats(
       .reduce((sum, item) => sum + scheduleInvestedMinutes(item), 0);
     return { ...goal, weeklyMinutes, completedMinutes };
   });
+}
+
+/**
+ * Browser-local mode uses the same achievement registry and visible overview
+ * contract as database mode. Newly unlocked achievements are written into the
+ * goal object so the existing `rr.goals` persistence keeps their first unlock
+ * time stable across refreshes.
+ */
+export function enrichLocalGoalsWithExecution(goals: Goal[], schedule: ScheduleItem[], timezone: string, now = new Date()): Goal[] {
+  const week = zonedPeriod(now, timezone, "weekly");
+  return goals.map((goal) => {
+    const lifecycleStatus: GoalLifecycleStatus = String(goal.status) === "draft" ? "active" : goal.status;
+    const executionEvents = new Map<string, { type: "schedule" | "routine"; id: string; occurredAt: string; dateKey: string; minutes: number; estimated: boolean }>();
+    let weekPlannedMinutes = 0;
+    for (const item of schedule) {
+      if (!scheduleBelongsToGoal(item, goal) || item.status === "cancelled" || item.status === "rescheduled") continue;
+      const startsAt = localScheduleDate(item, timezone);
+      const duration = durationMinutes(item.start, item.end);
+      if (startsAt >= week.start && startsAt < week.end && item.status !== "missed") weekPlannedMinutes += duration;
+      if (item.status !== "completed") continue;
+      const dateKey = item.date ?? zonedDateKey(startsAt, timezone);
+      const id = item.routineId ? `routine:${item.routineId}:${dateKey}` : `schedule:${item.id}`;
+      const actual = item.execution?.actualMinutes;
+      executionEvents.set(id, { type: item.routineId ? "routine" : "schedule", id, occurredAt: startsAt.toISOString(), dateKey, minutes: actual != null && actual > 0 ? actual : duration, estimated: !(actual != null && actual > 0) });
+    }
+    for (const routine of goal.routines ?? []) {
+      for (const record of routine.executionRecords ?? []) {
+        if (record.status !== "completed") continue;
+        const dateKey = zonedDateKey(new Date(record.occurrenceDate), timezone);
+        const id = `routine:${routine.id}:${dateKey}`;
+        const existing = executionEvents.get(id);
+        const actual = record.actualMinutes;
+        const minutes = actual != null && actual > 0 ? actual : existing?.minutes ?? routine.durationMinutes;
+        if (!existing || actual != null && actual > 0) executionEvents.set(id, { type: "routine", id, occurredAt: record.occurrenceDate, dateKey, minutes, estimated: !(actual != null && actual > 0) });
+      }
+    }
+
+    const executionRefs = [...executionEvents.values()].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+    const activeDateKeys = [...new Set(executionRefs.map((ref) => ref.dateKey))].sort();
+    const weekRefs = executionRefs.filter((ref) => { const date = new Date(ref.occurredAt); return date >= week.start && date < week.end; });
+    const taskRefs = (goal.tasks ?? []).filter((task) => task.completionRecord).map((task) => ({ type: "task" as const, id: task.id, occurredAt: task.completedAt ?? task.completionRecord!.generatedAt }));
+    const milestoneRefs = (goal.milestones ?? []).filter((milestone) => milestone.status === "completed").map((milestone) => ({ type: "milestone" as const, id: milestone.id, occurredAt: milestone.completedAt ?? now.toISOString() }));
+    const outcomeRefs = (goal.outcomes ?? []).filter((outcome) => outcome.completedAt).map((outcome) => ({ type: "outcome" as const, id: outcome.id, occurredAt: outcome.completedAt! }));
+    const routineRefs = executionRefs.filter((ref) => ref.type === "routine");
+    const facts: GoalExecutionFacts = {
+      goalId: goal.id,
+      lifecycleStatus,
+      investedMinutes: executionRefs.reduce((sum, ref) => sum + ref.minutes, 0),
+      weekInvestedMinutes: weekRefs.reduce((sum, ref) => sum + ref.minutes, 0),
+      activeDateKeys,
+      weekActiveDateKeys: [...new Set(weekRefs.map((ref) => ref.dateKey))].sort(),
+      completedSessions: executionRefs.length,
+      longestSessionMinutes: executionRefs.reduce((longest, ref) => Math.max(longest, ref.minutes), 0),
+      confirmedTaskCount: taskRefs.length,
+      confirmedMilestoneCount: milestoneRefs.length,
+      confirmedOutcomeCount: outcomeRefs.length,
+      routineCompletedCount: routineRefs.length,
+      routineActiveWeekKeys: [...new Set(routineRefs.map((ref) => localMondayKey(ref.dateKey)))].sort(),
+      returnedAfterGap: activeDateKeys.some((key, index) => index > 0 && localDaysBetween(activeDateKeys[index - 1]!, key) >= 14),
+      weekPlannedMinutes,
+      evidenceRefs: [...executionRefs, ...taskRefs, ...milestoneRefs, ...outcomeRefs].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)),
+    };
+
+    const milestones = syncLocalMilestoneSuggestions(goal.milestones ?? [], facts, now);
+    const modules = resolveAchievementModules({ category: goal.category, project: goal.project, skill: goal.skill, hasRoutine: Boolean(goal.routines?.length) });
+    const history = [...(goal.achievementHistory ?? [])];
+    const historyById = new Map(history.map((item) => [item.achievementId, item]));
+    const achievements: AchievementView[] = definitionsForModules(modules).map((definition) => {
+      const evaluation = evaluateAchievement(definition, facts);
+      let unlocked = historyById.get(definition.id);
+      if (evaluation.met && !unlocked) {
+        unlocked = { achievementId: definition.id, unlockedAt: localAchievementUnlockedAt(evaluation.evidenceRefs, now) };
+        history.push(unlocked);
+        historyById.set(definition.id, unlocked);
+      }
+      const evidenceSummary = localAchievementEvidence(definition.evaluator, evaluation.current, evaluation.target);
+      return {
+        id: definition.id,
+        title: definition.title,
+        description: definition.description,
+        conditionLabel: definition.conditionLabel,
+        module: definition.applicableModules[0]!,
+        tier: definition.tier,
+        icon: definition.icon,
+        state: unlocked ? "unlocked" : evaluation.current > 0 ? "in_progress" : "locked",
+        current: evaluation.current,
+        target: evaluation.target,
+        unlockedAt: unlocked?.unlockedAt,
+        evidenceSummary,
+      };
+    });
+    const visibleSuggestions = milestones.flatMap((milestone) => milestone.reviewSuggestions ?? []).filter((suggestion) => suggestion.status === "pending" || suggestion.status === "snoozed" && Boolean(suggestion.snoozedUntil && new Date(suggestion.snoozedUntil) <= now));
+    const overdueMilestones = milestones.filter((milestone) => milestone.status === "pending" && milestone.targetDate && new Date(milestone.targetDate) < now).length;
+    const recentAchievement = achievements.filter((achievement) => achievement.state === "unlocked").sort((a, b) => (b.unlockedAt ?? "").localeCompare(a.unlockedAt ?? ""))[0] ?? null;
+    const execution: GoalExecutionOverview = {
+      lifecycleStatus,
+      investedMinutes: facts.investedMinutes,
+      weekInvestedMinutes: facts.weekInvestedMinutes,
+      weekPlannedMinutes,
+      weekActiveDays: facts.weekActiveDateKeys.length,
+      activeDays: activeDateKeys.length,
+      completedSessions: facts.completedSessions,
+      actionHint: deriveGoalActionHint({ lifecycleStatus, pendingMilestoneSuggestions: visibleSuggestions.length, overdueMilestones, weekPlannedMinutes, weekInvestedMinutes: facts.weekInvestedMinutes }),
+      planningHints: derivePlanningHints({ outcomeCount: goal.outcomes?.length ?? 0, milestoneCount: goal.milestones?.length ?? 0, category: goal.category, targetDate: goal.targetDate, hasExecution: facts.completedSessions > 0 }),
+      recentAchievement,
+      achievements,
+    };
+    return { ...goal, status: lifecycleStatus, weeklyMinutes: weekPlannedMinutes, completedMinutes: facts.weekInvestedMinutes, milestones, achievementHistory: history, execution };
+  });
+}
+
+function syncLocalMilestoneSuggestions(milestones: NonNullable<Goal["milestones"]>, facts: GoalExecutionFacts, now: Date): NonNullable<Goal["milestones"]> {
+  return milestones.map((milestone) => {
+    if (milestone.status !== "pending" || !milestone.completionCriteria) return milestone;
+    const evaluation = evaluateMilestoneCriteria(milestone.completionCriteria, facts);
+    if (!evaluation?.met) return milestone;
+    const evidence = {
+      milestoneVersion: milestone.version,
+      criteria: milestone.completionCriteria,
+      results: evaluation.results.map((result) => ({ id: result.id, current: result.current, target: result.target, met: result.met })),
+      sourceRefs: evaluation.evidenceRefs,
+    };
+    const fingerprint = localStableFingerprint(evidence);
+    const suggestions = [...(milestone.reviewSuggestions ?? [])];
+    const existingIndex = suggestions.findIndex((suggestion) => suggestion.id === `local:${milestone.id}:${fingerprint}`);
+    if (existingIndex >= 0) {
+      const existing = suggestions[existingIndex]!;
+      if ((existing.status === "snoozed" || existing.status === "dismissed") && existing.snoozedUntil && new Date(existing.snoozedUntil) <= now) {
+        suggestions[existingIndex] = { ...existing, status: "pending", suggestedAt: now.toISOString(), snoozedUntil: null, decidedAt: null };
+        return { ...milestone, reviewSuggestions: suggestions };
+      }
+      return milestone;
+    }
+    const superseded = suggestions.map((suggestion) => suggestion.status === "pending" || suggestion.status === "snoozed" ? { ...suggestion, status: "superseded" as const, decidedAt: now.toISOString(), decisionReason: "有更新的完成证据" } : suggestion);
+    const matched = evaluation.results.filter((result) => result.met).map((result) => `${result.label}（${result.current}/${result.target}）`).join("；");
+    return {
+      ...milestone,
+      reviewSuggestions: [{ id: `local:${milestone.id}:${fingerprint}`, milestoneId: milestone.id, milestoneVersion: milestone.version, reason: `以下公开完成标准已有证据：${matched}。请确认这是否足以代表阶段完成。`, status: "pending", suggestedAt: now.toISOString(), evidence }, ...superseded],
+    };
+  });
+}
+
+function localStableFingerprint(value: unknown): string {
+  const input = JSON.stringify(localSortValue(value));
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) hash = Math.imul(hash ^ input.charCodeAt(index), 16777619);
+  return (hash >>> 0).toString(36);
+}
+
+function localSortValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(localSortValue);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, localSortValue(entry)]));
+  return value;
+}
+
+function localScheduleDate(item: ScheduleItem, timezone: string): Date {
+  if (!item.date) return new Date();
+  return zonedDateTimeToUtc(item.date, item.start, timezone);
+}
+
+function localMondayKey(dateKey: string): string {
+  const date = new Date(`${dateKey}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
+  return date.toISOString().slice(0, 10);
+}
+
+function localDaysBetween(a: string, b: string): number {
+  return Math.round((new Date(`${b}T00:00:00.000Z`).getTime() - new Date(`${a}T00:00:00.000Z`).getTime()) / 86_400_000);
+}
+
+function localAchievementUnlockedAt(refs: GoalExecutionFacts["evidenceRefs"], now: Date): string {
+  return [...refs].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)).at(-1)?.occurredAt ?? now.toISOString();
+}
+
+function localAchievementEvidence(evaluator: string, current: number, target: number): string {
+  if (evaluator === "invested_minutes" || evaluator === "longest_session") return `${current} / ${target} 分钟`;
+  if (evaluator === "active_days") return `${current} / ${target} 个有效执行日`;
+  if (evaluator === "routine_active_weeks") return `${current} / ${target} 个自然周`;
+  return `${current} / ${target}`;
 }
 
 /**

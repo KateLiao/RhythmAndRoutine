@@ -85,6 +85,11 @@ export function mapServerBlocksToScheduleItems(blocks: Awaited<ReturnType<typeof
             ? [block.taskId]
             : [];
     const er = block.executionRecord;
+    const focusState = er?.rhythmFeedback && "focusState" in er.rhythmFeedback && typeof er.rhythmFeedback.focusState === "string"
+      ? er.rhythmFeedback.focusState
+      : er && "focusState" in er && typeof er.focusState === "string"
+        ? er.focusState
+        : undefined;
     return {
       id: block.id,
       title: block.title,
@@ -104,6 +109,7 @@ export function mapServerBlocksToScheduleItems(blocks: Awaited<ReturnType<typeof
       version: block.version,
       execution: er ? {
         result: er.result,
+        feedbackVersion: "feedbackVersion" in er ? er.feedbackVersion : undefined,
         actualMinutes: er.actualMinutes,
         actualStartedAt: "actualStartedAt" in er ? executionTimeValue(er.actualStartedAt) : undefined,
         actualEndedAt: "actualEndedAt" in er ? executionTimeValue(er.actualEndedAt) : undefined,
@@ -115,6 +121,7 @@ export function mapServerBlocksToScheduleItems(blocks: Awaited<ReturnType<typeof
         note: er.rhythmFeedback?.note ?? undefined,
         comfortable: er.rhythmFeedback && "comfortable" in er.rhythmFeedback ? er.rhythmFeedback.comfortable ?? undefined : undefined,
         timeFit: er.rhythmFeedback && "timeFit" in er.rhythmFeedback ? er.rhythmFeedback.timeFit ?? undefined : undefined,
+        focusState,
       } : undefined,
     };
   });

@@ -3,8 +3,11 @@ import type { TaskCompletionRecord, TaskCompletionSummary } from "@/domain/schem
 import { taskCompletionSummarySchema } from "@/domain/schemas";
 import { getDb } from "@/lib/db";
 import { DomainError } from "@/server/api-response";
+import { evaluateGoalAchievementsBestEffort } from "@/server/services/goal-execution";
+import { evaluateMilestoneSuggestionsBestEffort } from "@/server/services/milestone-suggestions";
 import { ensureLocalUser } from "@/server/auth";
 import { z } from "zod";
+import { resolveExecutionFocusState } from "@/domain/execution-feedback";
 
 const completeTaskSchema = z.object({
   expectedVersion: z.number().int().positive(),
@@ -22,7 +25,8 @@ type TaskBlock = {
     deviationReason: string | null;
     obstacle: string | null;
     quality: string | null;
-    rhythmFeedback: { tags: string[]; note: string | null; comfortable: boolean | null; timeFit: string | null } | null;
+    feedbackVersion: number;
+    rhythmFeedback: { tags: string[]; note: string | null; comfortable: boolean | null; timeFit: string | null; focusState: string | null } | null;
   } | null;
 };
 
@@ -65,10 +69,12 @@ function serializeBlocksForPrompt(blocks: TaskBlock[]) {
     plannedMinutes: Math.max(0, Math.round((block.endsAt.getTime() - block.startsAt.getTime()) / 60000)),
     actualMinutes: block.executionRecord?.actualMinutes ?? null,
     result: block.executionRecord?.result ?? null,
+    feedbackVersion: block.executionRecord?.feedbackVersion ?? null,
     obstacle: block.executionRecord?.obstacle ?? undefined,
     deviationReason: block.executionRecord?.deviationReason ?? undefined,
     quality: block.executionRecord?.quality ?? undefined,
     rhythmTags: block.executionRecord?.rhythmFeedback?.tags ?? [],
+    focusState: resolveExecutionFocusState(block.executionRecord?.feedbackVersion, block.executionRecord?.rhythmFeedback?.focusState, block.executionRecord?.rhythmFeedback?.tags ?? []),
     rhythmNote: block.executionRecord?.rhythmFeedback?.note ?? undefined,
     timeFit: block.executionRecord?.rhythmFeedback?.timeFit ?? undefined,
   }));
@@ -83,7 +89,7 @@ function serializeBlocksForPrompt(blocks: TaskBlock[]) {
 function buildRulesCompletion(task: { title: string; intent: string | null; completionCriteria: unknown }, blocks: TaskBlock[], investedMinutes: number): TaskCompletionSummary {
   const completed = blocks.filter((block) => block.status === ScheduleBlockStatus.COMPLETED);
   const missed = blocks.filter((block) => block.status === ScheduleBlockStatus.MISSED || block.status === ScheduleBlockStatus.RESCHEDULED);
-  const smooth = completed.filter((block) => block.executionRecord?.rhythmFeedback?.tags.includes("smooth")).length;
+  const smooth = completed.filter((block) => ["deep_focus", "steady_focus"].includes(resolveExecutionFocusState(block.executionRecord?.feedbackVersion, block.executionRecord?.rhythmFeedback?.focusState, block.executionRecord?.rhythmFeedback?.tags ?? []) ?? "")).length;
   const executionSummary = completed.length
     ? `任务「${task.title}」共安排 ${blocks.length} 次，其中 ${completed.length} 次已完成，累计真实投入 ${investedMinutes} 分钟。${smooth ? `有 ${smooth} 次执行反馈为顺畅。` : ""}${missed.length ? `另有 ${missed.length} 次未完成或改期，可作为后续调整参考。` : ""}`
     : `任务「${task.title}」尚未留下已完成的时间块记录，本次由你直接确认完成。`;
@@ -173,6 +179,10 @@ export async function completeTaskWithSummary(userId: string, taskId: string, ra
 
   const updated = await getDb().task.findFirst({ where: { id: taskId, goal: { userId } } });
   if (!updated) throw new DomainError("TASK_NOT_FOUND", "没有找到这个任务。", 404);
+  await Promise.all([
+    evaluateGoalAchievementsBestEffort([task.goalId]),
+    evaluateMilestoneSuggestionsBestEffort([task.goalId]),
+  ]);
   return {
     id: updated.id,
     status: updated.status.toLowerCase(),

@@ -2,10 +2,11 @@ import { capabilityPolicies } from "./capabilities";
 import { buildAgentContextSummary } from "./context-builder";
 import { serializeCompactToolResult, ToolEvidenceLedger } from "./tool-evidence-ledger";
 import { AgentExitReason, AgentRunRequest, AgentTool, LoopGoalStatus, LoopNextAction, ModelAdapter, ModelMessage, RunEvent, ToolResult } from "./types";
+import { executeScheduledBatch, scheduleToolCalls, type PendingToolCall } from "./tool-scheduler";
 
 export type AgentRunStore = {
-  create(input: { userId: string; capability: string; provider: string; model: string; contextManifest: unknown; inputSummary?: string; maxSteps: number; maxTokens: number }): Promise<{ id: string }>;
-  appendStep(runId: string, step: { sequence: number; loopIteration?: number; kind: string; goalStatus?: LoopGoalStatus; nextAction?: LoopNextAction; reason?: string; missingInformation?: string[]; toolAttemptCount?: number; input?: unknown; output?: unknown; durationMs?: number; inputTokens?: number; outputTokens?: number; toolCalls?: Array<{ name: string; risk: AgentTool["risk"]; input: unknown; output?: unknown; ok: boolean; errorCode?: string; durationMs?: number }> }): Promise<void>;
+  create(input: { userId: string; capability: string; provider: string; model: string; contextManifest: unknown; inputSummary?: string; maxSteps: number; maxTokens: number; intentResolution?: unknown; executionPlan?: unknown; contextMetrics?: unknown; conversationId?: string; parentRunId?: string; continuationKind?: string; continuationState?: unknown }): Promise<{ id: string }>;
+  appendStep(runId: string, step: { sequence: number; loopIteration?: number; kind: string; goalStatus?: LoopGoalStatus; nextAction?: LoopNextAction; reason?: string; missingInformation?: string[]; toolAttemptCount?: number; input?: unknown; output?: unknown; durationMs?: number; inputTokens?: number; outputTokens?: number; toolCalls?: Array<{ toolCallId?: string; batchId?: string; completionOrder?: number; name: string; risk: AgentTool["risk"]; input: unknown; output?: unknown; ok: boolean; errorCode?: string; durationMs?: number }> }): Promise<void>;
   markAwaitingConfirmation(runId: string, changeSetId: string, summary: string, retryCount: number): Promise<void>;
   complete(runId: string, finalText: string, exitReason: AgentExitReason, goalStatus: LoopGoalStatus, retryCount: number): Promise<void>;
   fail(runId: string, code: string, message: string, exitReason: AgentExitReason, retryCount: number): Promise<void>;
@@ -119,6 +120,12 @@ export class AgentRuntime {
       inputSummary: request.prompt,
       maxSteps: policy.maxSteps,
       maxTokens: policy.maxRunTokens,
+      intentResolution: request.intentResolution,
+      executionPlan: request.executionPlan,
+      contextMetrics: request.context.sourceMetrics,
+      conversationId: request.conversationId,
+      parentRunId: request.parentRunId,
+      continuationKind: request.intentResolution?.adjustment?.kind,
     });
     yield { type: "run_started", runId: run.id };
 
@@ -135,6 +142,7 @@ export class AgentRuntime {
     let failureRecoveryCount = 0;
     const successfulToolNames: string[] = [];
     const successfulTools: Array<{ name: string; input: unknown; data: unknown }> = [];
+    const readCache = new Map<string, ToolResult>();
     const maxTokens = policy.maxRunTokens;
     const contextSummary = buildAgentContextSummary(
       request.context.business,
@@ -145,9 +153,12 @@ export class AgentRuntime {
     );
 
     try {
-      const planningReason = "已读取当前对话、页面和业务上下文，准备围绕用户目标选择工具或直接回复。";
-      await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration: 0, kind: "planning", goalStatus: "needs_more_action", nextAction: "call_tool", reason: planningReason, input: { prompt: request.prompt, selectedEntity: request.context.page?.selectedEntity } });
-      yield { type: "loop_step", kind: "planning", label: "理解目标", summary: "已结合当前页面和对话识别用户意图", goalStatus: "needs_more_action", nextAction: "call_tool", detail: { scope: "当前消息、最近对话、页面选中对象和业务上下文", judgment: planningReason, nextAction: "选择可用工具或直接给出答复。" } };
+      const intentSummary = request.intentResolution?.intents.map((intent) => intent.capability).join(" + ") || request.capability;
+      const planningReason = request.intentResolution?.needsClarification
+        ? `已识别 ${intentSummary}，仍有阻塞信息需要先澄清：${request.intentResolution.clarificationReason ?? "关键信息不足"}。`
+        : `已识别 ${intentSummary}，并形成 ${request.executionPlan?.steps.length ?? 1} 个可观测步骤。`;
+      await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration: 0, kind: "planning", goalStatus: "needs_more_action", nextAction: request.intentResolution?.needsClarification ? "ask_user" : "call_tool", reason: planningReason, input: { prompt: request.prompt, selectedEntity: request.context.page?.selectedEntity, intentResolution: request.intentResolution, executionPlan: request.executionPlan, contextMetrics: request.context.sourceMetrics } });
+      yield { type: "loop_step", kind: "planning", label: "理解目标", summary: request.intentResolution?.intents.length && request.intentResolution.intents.length > 1 ? `已识别 ${request.intentResolution.intents.length} 个意图并排好顺序` : "已结合当前消息、页面和对话识别意图", goalStatus: "needs_more_action", nextAction: request.intentResolution?.needsClarification ? "ask_user" : "call_tool", detail: { scope: `意图：${intentSummary}；计划：${request.executionPlan?.steps.map((step) => step.objective).join(" → ") ?? "最小执行步骤"}`, judgment: planningReason, nextAction: request.intentResolution?.needsClarification ? "只询问仍阻塞执行的关键信息。" : "按依赖读取证据，必要时生成待确认草案。" } };
 
       for (let loopIteration = 1; loopIteration <= policy.maxSteps; loopIteration += 1) {
         if (Date.now() - runStartedAt > 120_000) throw new AgentRuntimeError("MAX_DURATION", "小律已达到本次运行的 120 秒时限。计划没有被修改。", "stopped_by_time_budget");
@@ -159,16 +170,23 @@ export class AgentRuntime {
         let inputTokens: number | undefined; let outputTokens: number | undefined;
         const toolCalls: NonNullable<Parameters<AgentRunStore["appendStep"]>[1]["toolCalls"]> = [];
         const nextToolMessages: ModelMessage[] = [];
-        const availableTools = policy.allowedTools.map((name) => this.tools.get(name)).filter((tool): tool is AgentTool => Boolean(tool));
+        const allowedToolNames = request.intentResolution?.route === "non_execution"
+          ? []
+          : [...new Set((request.intentResolution?.intents.length ? request.intentResolution.intents.map((intent) => capabilityPolicies[intent.capability].allowedTools) : [policy.allowedTools]).flat())];
+        const availableTools = allowedToolNames.map((name) => this.tools.get(name)).filter((tool): tool is AgentTool => Boolean(tool));
         const evidence = evidenceLedger.toSystemContext();
         const budgetGuidance = buildBudgetGuidance(totalTokens, maxTokens);
         const system = [
           policy.system,
+          request.intentResolution ? `结构化意图：${JSON.stringify(request.intentResolution)}\n执行计划：${JSON.stringify(request.executionPlan ?? null)}\n严格按意图顺序完成；只在 missingSlots 阻塞安全执行时询问。` : "",
+          request.intentResolution?.adjustment?.kind === "itinerary_create" ? "这是明确的一日或多日行程安排请求。最终候选通过校验后必须调用 propose_change_set 创建待确认草案；不能只输出文字方案后再问用户要不要生成。" : "",
+          request.context.sourceMetrics?.some((metric) => !metric.ok) ? `上下文降级：${request.context.sourceMetrics.filter((metric) => !metric.ok).map((metric) => `${metric.source}:${metric.error ?? "读取失败"}`).join("；")}。不要把缺失数据当成零；危险步骤前可用工具补读。` : "",
           `当前上下文摘要：\n${contextSummary}`,
           evidence ? `已验证工具证据（精简账本；应继续作为事实使用，不要因原始工具消息已压缩而重复查询）：\n${evidence}` : "",
           budgetGuidance,
         ].filter(Boolean).join("\n");
         const events = this.model.stream({ model: request.model, system, messages: [...baseMessages, ...pendingToolMessages], tools: availableTools, maxOutputTokens: policy.maxOutputTokens }, request.signal);
+        const pendingCalls: PendingToolCall[] = [];
 
         for await (const event of events) {
           if (event.type === "text_delta") {
@@ -178,48 +196,83 @@ export class AgentRuntime {
           if (event.type === "model_fallback") yield event;
           if (event.type === "usage") { inputTokens = event.inputTokens; outputTokens = event.outputTokens; totalTokens += event.inputTokens + event.outputTokens; }
           if (event.type === "tool_call") {
-            calledTool = true;
             const tool = this.tools.get(event.name);
-            if (!tool || !policy.allowedTools.includes(event.name)) throw new AgentRuntimeError("TOOL_NOT_ALLOWED", `工具 ${event.name} 未被当前能力授权。`, "blocked_by_tool_error");
-            const toolCallId = event.id || crypto.randomUUID();
-            yield { type: "tool_started", tool: event.name, toolCallId, input: event.input };
-            const toolStartedAt = Date.now();
-            const prerequisiteError = validateSchedulePlanningPrerequisites(event.name, event.input, successfulToolNames, successfulTools);
-            const result = prerequisiteError ?? await this.executeTool(tool, event.input, { userId: request.userId, runId: run.id, idempotencyKey: `${run.id}:${loopIteration}:${toolCallId}` });
-            if (result.ok) {
-              successfulToolNames.push(tool.name);
-              successfulTools.push({ name: tool.name, input: event.input, data: result.data });
+            if (!tool || !allowedToolNames.includes(event.name)) throw new AgentRuntimeError("TOOL_NOT_ALLOWED", `工具 ${event.name} 未被当前意图授权。`, "blocked_by_tool_error");
+            pendingCalls.push({ id: event.id || crypto.randomUUID(), name: event.name, input: event.input, tool, originalIndex: pendingCalls.length });
+          }
+        }
+        if (pendingCalls.length) {
+          calledTool = true;
+          const scheduled = scheduleToolCalls(pendingCalls, successfulToolNames, 3);
+          const completed: Array<{ call: PendingToolCall; result: ToolResult; durationMs: number; batchId: string; completedAt: number; completionOrder: number }> = [];
+          let completionOrder = 0;
+          for (const call of pendingCalls) yield { type: "tool_started", tool: call.name, toolCallId: call.id, input: call.input };
+          for (const rejected of scheduled.rejected) {
+            completionOrder += 1;
+            completed.push({ call: rejected, result: rejected.result, durationMs: 0, batchId: "rejected", completedAt: Date.now(), completionOrder });
+            evidenceLedger.record(rejected.name, rejected.input, rejected.result);
+            yield { type: "tool_completed", tool: rejected.name, toolCallId: rejected.id, input: rejected.input, result: rejected.result };
+          }
+          for (const batch of scheduled.batches) {
+            const batchResults = await executeScheduledBatch(batch, async (call) => {
+              const toolStartedAt = Date.now();
+              const cacheKey = call.tool.risk === "read" && call.name !== "validate_schedule_candidates" ? `${call.name}:${stableJson(call.input)}` : undefined;
+              const cached = cacheKey ? readCache.get(cacheKey) : undefined;
+              if (cached) return { result: cached, durationMs: 0 };
+              const prerequisiteError = validateSchedulePlanningPrerequisites(call.name, call.input, successfulToolNames, successfulTools);
+              const latestScheduleEvidence = [...successfulTools].reverse().find((item) => item.name === "validate_schedule_candidates")?.data as { scheduleEvidence?: unknown } | undefined;
+              const result = prerequisiteError ?? await this.executeTool(call.tool, call.input, { userId: request.userId, runId: run.id, idempotencyKey: buildToolIdempotencyKey(run.id, loopIteration, call), scheduleEvidence: latestScheduleEvidence?.scheduleEvidence });
+              if (cacheKey && result.ok) readCache.set(cacheKey, result);
+              return { result, durationMs: Date.now() - toolStartedAt };
+            });
+            for (const item of [...batchResults].sort((left, right) => left.completedAt - right.completedAt || left.call.originalIndex - right.call.originalIndex)) {
+              completionOrder += 1;
+              completed.push({ call: item.call, result: item.value.result, durationMs: item.value.durationMs, batchId: batch.id, completedAt: item.completedAt, completionOrder });
+              // 依赖批次必须立即看到上一批的实际成功证据；提供给模型的 tool message 顺序仍在下方恢复为原调用顺序。
+              if (item.value.result.ok) {
+                successfulToolNames.push(item.call.name);
+                successfulTools.push({ name: item.call.name, input: item.call.input, data: item.value.result.data });
+              }
+              evidenceLedger.record(item.call.name, item.call.input, item.value.result);
+              yield { type: "tool_completed", tool: item.call.name, toolCallId: item.call.id, input: item.call.input, result: item.value.result };
             }
-            evidenceLedger.record(tool.name, event.input, result);
-            toolCalls.push({ name: tool.name, risk: tool.risk, input: event.input, output: result, ok: result.ok, errorCode: result.ok ? undefined : result.code, durationMs: Date.now() - toolStartedAt });
-            yield { type: "tool_completed", tool: event.name, toolCallId, input: event.input, result };
-            if (!result.ok) {
-              failureRecoveryCount += 1;
-              const nextAction: LoopNextAction = result.retryable ? "retry_tool" : "stop";
-              const reason = result.retryable
-                ? `工具 ${tool.name} 返回 ${result.code}，将把错误反馈给模型，让它修正参数、换工具或追问用户。`
-                : `工具 ${tool.name} 返回不可重试错误 ${result.code}，停止自动推进。`;
-              yield { type: "loop_step", kind: "recovery", label: "工具失败恢复", summary: result.message, goalStatus: "needs_more_action", nextAction, detail: { result: result.message, judgment: reason, nextAction: result.retryable ? "修正参数、换工具或追问用户。" : "停止并解释原因。" } };
-              if (!result.retryable) throw new AgentRuntimeError(result.code, result.message, "blocked_by_tool_error");
-              if (failureRecoveryCount >= 5) throw new AgentRuntimeError("MAX_RETRIES", `工具失败恢复已达到 5 次，最近一次失败：${result.message}`, "stopped_by_max_retries");
-            }
-            nextToolMessages.push(
-              { role: "assistant", content: "", toolCalls: [{ id: toolCallId, name: event.name, input: event.input }] },
-              { role: "tool", toolCallId, content: serializeCompactToolResult(tool.name, result) },
-            );
+          }
 
-            if (tool.risk === "draft_write" && result.ok) {
-              const changeSetId = (result.data as { changeSetId: string }).changeSetId;
-              const reason = "写操作已生成待确认 ChangeSet；Agent 的目标是产出草案，正式应用必须等待用户确认。";
-              await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration, kind: "tool", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", reason, output: finalText.slice(-1000), durationMs: Date.now() - startedAt, inputTokens, outputTokens, toolAttemptCount: toolCalls.length, toolCalls });
-              await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration, kind: "verification", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", reason, output: result, durationMs: Date.now() - startedAt, toolAttemptCount: toolCalls.length });
-              await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration, kind: "decision", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", reason, output: { changeSetId }, durationMs: Date.now() - startedAt, toolAttemptCount: toolCalls.length });
-              yield { type: "loop_step", kind: "verification", label: "验证工具结果", summary: "已生成可确认的变更草案", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", detail: { result: `ChangeSet ${changeSetId} 已创建。`, judgment: "草案生成成功，正式计划尚未修改。", nextAction: "等待用户确认草案。" } };
-              yield { type: "loop_step", kind: "decision", label: "判断目标状态", summary: "目标已达成，等待确认", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", detail: { judgment: reason, nextAction: "暂停 Agent Loop，交给审批流程。" } };
-              await this.store.markAwaitingConfirmation(run.id, changeSetId, finalText || reason, failureRecoveryCount);
-              yield { type: "approval_required", changeSetId };
-              return;
+          const orderedResults = [...completed].sort((left, right) => left.call.originalIndex - right.call.originalIndex);
+          let fatalToolError: AgentRuntimeError | null = null;
+          for (const item of orderedResults) {
+            toolCalls.push({ toolCallId: item.call.id, batchId: item.batchId, completionOrder: item.completionOrder, name: item.call.name, risk: item.call.tool.risk, input: item.call.input, output: item.result, ok: item.result.ok, errorCode: item.result.ok ? undefined : item.result.code, durationMs: item.durationMs });
+            if (!item.result.ok) {
+              failureRecoveryCount += 1;
+              const nextAction: LoopNextAction = item.result.retryable ? "retry_tool" : "stop";
+              const reason = item.result.retryable
+                ? `工具 ${item.call.name} 返回 ${item.result.code}，将把错误反馈给模型，让它修正参数、换工具或追问用户。`
+                : `工具 ${item.call.name} 返回不可重试错误 ${item.result.code}，停止自动推进。`;
+              const prerequisiteRecovery = ["SCHEDULE_WINDOW_REQUIRED", "SCHEDULE_CANDIDATE_VALIDATION_REQUIRED", "TOOL_EVIDENCE_REQUIRED", "STALE_DRAFT_BATCH"].includes(item.result.code);
+              yield { type: "loop_step", kind: "recovery", label: prerequisiteRecovery ? "补充必要校验" : "工具失败恢复", summary: item.result.message, goalStatus: "needs_more_action", nextAction, detail: { result: item.result.message, judgment: reason, nextAction: item.result.retryable ? "修正参数、换工具或追问用户。" : "停止并解释原因。" } };
+              if (!item.result.retryable) fatalToolError = new AgentRuntimeError(item.result.code, item.result.message, "blocked_by_tool_error");
+              if (failureRecoveryCount >= 5) fatalToolError = new AgentRuntimeError("MAX_RETRIES", `工具失败恢复已达到 5 次，最近一次失败：${item.result.message}`, "stopped_by_max_retries");
             }
+          }
+          nextToolMessages.push({ role: "assistant", content: "", toolCalls: pendingCalls.map((call) => ({ id: call.id, name: call.name, input: call.input })) });
+          nextToolMessages.push(...orderedResults.map((item) => ({ role: "tool" as const, toolCallId: item.call.id, content: serializeCompactToolResult(item.call.name, item.result) })));
+
+          const draftResult = orderedResults.find((item) => item.call.tool.risk === "draft_write" && item.result.ok);
+          if (draftResult?.result.ok) {
+            const changeSetId = (draftResult.result.data as { changeSetId: string }).changeSetId;
+            const reason = "写操作已生成待确认 ChangeSet；Agent 的目标是产出草案，正式应用必须等待用户确认。";
+            await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration, kind: "tool", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", reason, output: finalText.slice(-1000), durationMs: Date.now() - startedAt, inputTokens, outputTokens, toolAttemptCount: toolCalls.length, toolCalls });
+            await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration, kind: "verification", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", reason, output: draftResult.result, durationMs: Date.now() - startedAt, toolAttemptCount: toolCalls.length });
+            await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration, kind: "decision", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", reason, output: { changeSetId }, durationMs: Date.now() - startedAt, toolAttemptCount: toolCalls.length });
+            yield { type: "loop_step", kind: "verification", label: "验证工具结果", summary: "已生成可确认的变更草案", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", detail: { result: `ChangeSet ${changeSetId} 已创建。`, judgment: "草案生成成功，正式计划尚未修改。", nextAction: "等待用户确认草案。" } };
+            yield { type: "loop_step", kind: "decision", label: "判断目标状态", summary: "目标已达成，等待确认", goalStatus: "awaiting_confirmation", nextAction: "propose_change_set", detail: { judgment: reason, nextAction: "暂停 Agent Loop，交给审批流程。" } };
+            await this.store.markAwaitingConfirmation(run.id, changeSetId, finalText || reason, failureRecoveryCount);
+            yield { type: "approval_required", changeSetId };
+            return;
+          }
+          if (fatalToolError) {
+            await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration, kind: "tool", goalStatus: "blocked", nextAction: "stop", reason: fatalToolError.message, durationMs: Date.now() - startedAt, inputTokens, outputTokens, toolAttemptCount: toolCalls.length, toolCalls });
+            throw fatalToolError;
           }
         }
         if (!calledTool && bufferedScheduleText && needsCandidateValidationBeforeFinal(bufferedScheduleText, successfulToolNames, successfulTools)) {
@@ -228,6 +281,14 @@ export class AgentRuntime {
           baseMessages.push({ role: "user", content: "你正在提出具体日程时间，但尚未证明这些最终候选无冲突。请先调用 validate_schedule_candidates 校验回复中准备推荐的每一个具体候选；若有冲突，调整后重新校验，再输出结论。" });
           await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration, kind: "recovery", goalStatus: "needs_more_action", nextAction: "call_tool", reason, output: { interceptedChars: bufferedScheduleText.length }, durationMs: Date.now() - startedAt, inputTokens, outputTokens, toolAttemptCount: 0 });
           yield { type: "loop_step", kind: "recovery", label: "补充候选时间校验", summary: "具体时间仍需核对冲突", goalStatus: "needs_more_action", nextAction: "call_tool", detail: { judgment: reason, nextAction: "校验最终候选时段后再回复。" } };
+          continue;
+        }
+        if (!calledTool && bufferedScheduleText && request.intentResolution?.adjustment?.kind === "itinerary_create" && !successfulToolNames.includes("propose_change_set")) {
+          failureRecoveryCount += 1;
+          const reason = "模型已经形成并校验具体行程，但尚未创建结构化待确认提案；已拦截纯文字结束。";
+          baseMessages.push({ role: "user", content: "这是明确的行程安排请求。不要再次读取已经具备的证据，也不要只输出文字方案；请直接用刚刚通过校验的候选调用 propose_change_set，生成待确认草案。" });
+          await this.store.appendStep(run.id, { sequence: stepSequence++, loopIteration, kind: "recovery", goalStatus: "needs_more_action", nextAction: "propose_change_set", reason, output: { interceptedChars: bufferedScheduleText.length }, durationMs: Date.now() - startedAt, inputTokens, outputTokens, toolAttemptCount: 0 });
+          yield { type: "loop_step", kind: "recovery", label: "生成结构化提案", summary: "候选已校验，正在创建待确认草案", goalStatus: "needs_more_action", nextAction: "propose_change_set", detail: { judgment: reason, nextAction: "复用现有证据创建 ChangeSet。" } };
           continue;
         }
         if (!calledTool && bufferedScheduleText) {
@@ -340,4 +401,19 @@ function summarizeToolCalls(toolCalls: Array<{ name: string; ok: boolean; errorC
   const failed = toolCalls.filter((call) => !call.ok);
   if (!failed.length) return `本轮 ${toolCalls.length} 个工具调用均成功。`;
   return `本轮 ${toolCalls.length} 个工具调用中 ${failed.length} 个失败：${failed.map((call) => `${call.name}/${call.errorCode ?? "UNKNOWN"}`).join("、")}。`;
+}
+
+/** 写草案重试复用语义幂等键；即使第一次请求超时后仍在后台完成，也不会生成第二份 ChangeSet。 */
+export function buildToolIdempotencyKey(runId: string, loopIteration: number, call: Pick<PendingToolCall, "id" | "name" | "input" | "tool">) {
+  if (call.tool.risk !== "draft_write") return `${runId}:${loopIteration}:${call.id}`;
+  const value = `${call.name}:${stableJson(call.input)}`;
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+  return `${runId}:draft:${(hash >>> 0).toString(36)}`;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
 }

@@ -121,6 +121,61 @@ After implementation:
 - [ ] Checked that derived state points back to the source event identifier
       (`seq`, `id`, `version`) instead of inventing a second cursor
 
+## Generated Database Client Runtime Coherence
+
+A schema-backed service has three independently changing artifacts:
+
+```text
+schema and migrations -> generated client -> long-running application process
+```
+
+Generating a new client updates files on disk, but it does not replace a client
+module already cached by a running Next.js or Turbopack process. A migration can
+therefore be applied correctly while the service still rejects the new field as
+an unknown client argument.
+
+### Checklist: After Changing A Prisma Schema
+
+- [ ] Validate the schema and confirm the target database migration status.
+- [ ] Regenerate the Prisma Client before starting the application.
+- [ ] Restart every long-running development, worker, and scheduler process that
+      may have imported the old generated client.
+- [ ] Do not treat hot reload as a runtime-client refresh guarantee.
+- [ ] Verify the boundary with a read-only query or a transaction that rolls
+      back, and confirm the probe leaves no rows behind.
+- [ ] When diagnosing an unknown-field error, compare the application process
+      start time with the generated client's modification time before changing
+      service code or weakening persistence.
+
+**Real-world example**: `AgentRun.conversationId` existed in the Prisma schema,
+generated client, and migrated PostgreSQL table, but the Next.js development
+server had started before client generation. Turbopack retained the old client
+metadata and rejected `agentRun.create`. Regenerating at `predev`, restarting the
+server, and validating the create shape inside a rolled-back transaction fixed
+the mismatch without changing existing data.
+
+## Cross-Operation References in Draft Transactions
+
+A draft that creates multiple related entities has two identity domains:
+
+```text
+model/draft identity (operationId) -> transaction result identity (database ID)
+```
+
+Do not use one string field for both domains. Persisted `*Id` fields must contain real database IDs; draft-local `*Ref` fields must point to a create operation's stable `operationId`. The service boundary owns legacy canonicalization, dependency closure, topological ordering, and runtime ID resolution.
+
+### Checklist: Before Showing A Multi-Entity Draft
+
+- [ ] Every create operation has a unique stable `operationId`.
+- [ ] Draft-local references use `*Ref`; persisted references use `*Id`.
+- [ ] Unknown, duplicate, cyclic, and wrong-entity references fail before persistence.
+- [ ] Partial selection includes recursive parent dependencies.
+- [ ] Apply order is derived from dependencies, not model array order.
+- [ ] Every create operation registers all supported compatibility aliases against its real transaction ID.
+- [ ] A rollback probe verifies both the relationship written inside the transaction and zero rows after rollback.
+
+**Real-world example**: A ChangeSet created a Goal with `operationId=create-goal-missing-semester`, while six Schedule operations stored that temporary value in `goalId`. The preview looked correct because payloads were untyped, but approval queried the temporary string as a database ID. The durable fix canonicalized it to `goalRef`, mapped `operationId` to the created Goal ID, sorted dependencies, preflighted refs, and added an exact regression plus rollback integration probe.
+
 ---
 
 ## Cross-Platform Template Consistency

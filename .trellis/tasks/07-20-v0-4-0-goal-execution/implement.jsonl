@@ -1,0 +1,7 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Goal status, facts, achievement, milestone suggestion and UI span database, service, API and frontend boundaries."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse the existing schedule investment projection and centralize shared status/evidence contracts."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Achievement cards, evidence drawer and Agent/event-linked UI must preserve component and accessibility behavior."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Goal lifecycle, summary, achievement and suggestion payloads require aligned runtime and TypeScript contracts."}
+{"file":".trellis/tasks/07-20-v0-4-0-goal-execution/research/current-system.md","reason":"Verified current goal progress, milestone and status implementation paths."}
+{"file":".trellis/tasks/07-20-v0-4-0-goal-execution/research/achievement-data-snapshot.md","reason":"Real database aggregate used to define reusable achievement modules and backfill expectations."}
+{"file":".trellis/tasks/07-20-v0-4-0-goal-execution/research/goal-status-decision.md","reason":"Confirmed readiness removal decision and zero-loss expand-contract migration."}

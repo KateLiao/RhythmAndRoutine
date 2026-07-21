@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  compatibleExecutionQualityValues,
+  compatibleExecutionResultValues,
+  executionFocusValues,
+} from "@/domain/execution-feedback";
 
 export const createGoalSchema = z.object({
   title: z.string().trim().min(1).max(120),
@@ -11,8 +16,38 @@ export const createGoalSchema = z.object({
 
 export const createOutcomeSchema = z.object({ description: z.string().trim().min(1).max(600) });
 export const updateOutcomeSchema = createOutcomeSchema.partial().extend({ completed: z.boolean().optional(), expectedVersion: z.number().int().positive() });
-export const createMilestoneSchema = z.object({ title: z.string().trim().min(1).max(120), description: z.string().trim().max(600).optional() });
-export const updateMilestoneSchema = createMilestoneSchema.partial().extend({ status: z.enum(["pending", "ready_for_review", "completed", "rejected", "archived"]).optional(), expectedVersion: z.number().int().positive() });
+export const milestoneCriteriaSchema = z.object({
+  version: z.literal(1),
+  mode: z.enum(["all", "any"]),
+  items: z.array(z.object({
+    id: z.string().trim().min(1).max(80),
+    label: z.string().trim().min(1).max(240),
+    evaluator: z.enum(["linked_task_completed", "routine_completed_count", "invested_minutes", "active_days", "manual_only"]),
+    sourceIds: z.array(z.string().min(1)).max(20).optional(),
+    threshold: z.number().int().positive().max(100_000).optional(),
+  })).min(1).max(8),
+}).superRefine((criteria, context) => {
+  const ids = new Set<string>();
+  criteria.items.forEach((item, index) => {
+    if (ids.has(item.id)) context.addIssue({ code: "custom", path: ["items", index, "id"], message: "完成标准 ID 不能重复。" });
+    ids.add(item.id);
+    if (item.evaluator === "linked_task_completed" && !item.sourceIds?.length) {
+      context.addIssue({ code: "custom", path: ["items", index, "sourceIds"], message: "关联任务标准至少需要一个任务。" });
+    }
+    if (["routine_completed_count", "invested_minutes", "active_days"].includes(item.evaluator) && item.threshold === undefined) {
+      context.addIssue({ code: "custom", path: ["items", index, "threshold"], message: "这个完成标准需要明确阈值。" });
+    }
+  });
+});
+export const createMilestoneSchema = z.object({ title: z.string().trim().min(1).max(120), description: z.string().trim().max(600).optional(), targetDate: z.iso.datetime().nullable().optional(), completionCriteria: milestoneCriteriaSchema.nullable().optional() });
+export const updateMilestoneSchema = createMilestoneSchema.partial().extend({ status: z.enum(["pending", "completed", "rejected", "archived"]).optional(), expectedVersion: z.number().int().positive() });
+export const milestoneSuggestionDecisionSchema = z.object({
+  action: z.enum(["confirm", "snooze", "dismiss"]),
+  reason: z.string().trim().max(600).optional(),
+});
+export const achievementCorrectionSchema = z.object({
+  reason: z.string().trim().min(3).max(600),
+});
 
 export const updateGoalSchema = createGoalSchema.partial().extend({
   status: z.enum(["draft", "active", "paused", "completed", "archived"]).optional(),
@@ -63,9 +98,13 @@ export const routineExecutionSchema = z.object({
   plannedStartAt: z.iso.datetime().optional(),
   plannedEndAt: z.iso.datetime().optional(),
   status: z.enum(["completed", "skipped", "missed", "rescheduled"]),
+  feedbackVersion: z.literal(2).optional(),
   actualMinutes: z.number().int().nonnegative().max(1440).optional(),
-  feedbackTags: z.array(z.enum(["smooth", "resistant", "barely_completed", "high_energy", "low_energy", "interrupted", "not_started"])).max(4).default([]),
-  note: z.string().trim().max(600).optional(),
+  result: z.enum(compatibleExecutionResultValues).optional(),
+  quality: z.enum(compatibleExecutionQualityValues).nullable().optional(),
+  focusState: z.enum(executionFocusValues).nullable().optional(),
+  feedbackTags: z.array(z.enum(["smooth", "resistant", "barely_completed", "high_energy", "low_energy", "interrupted", "not_started"])).max(4).optional(),
+  note: z.string().trim().max(600).nullable().optional(),
   rescheduledStartAt: z.iso.datetime().optional(),
   rescheduledEndAt: z.iso.datetime().optional(),
 });
@@ -92,16 +131,25 @@ export const updateScheduleBlockSchema = scheduleBlockFields.partial().extend({
 }).refine((value) => !value.startsAt || !value.endsAt || new Date(value.endsAt) > new Date(value.startsAt), { message: "结束时间必须晚于开始时间。", path: ["endsAt"] });
 
 export const executionFeedbackSchema = z.object({
-  result: z.enum(["completed", "not_completed", "rescheduled"]),
+  feedbackVersion: z.literal(2).optional(),
+  result: z.enum(compatibleExecutionResultValues),
   actualMinutes: z.number().int().nonnegative().max(1440).optional(),
   deviationReason: z.string().trim().max(600).optional(),
-  tags: z.array(z.enum(["smooth", "resistant", "barely_completed", "high_energy", "low_energy", "interrupted", "not_started"])).min(1).max(4),
-  note: z.string().trim().max(600).optional(),
+  tags: z.array(z.enum(["smooth", "resistant", "barely_completed", "high_energy", "low_energy", "interrupted", "not_started"])).max(4).optional(),
+  note: z.string().trim().max(600).nullable().optional(),
   comfortable: z.boolean().optional(),
   timeFit: z.enum(["good", "neutral", "poor"]).optional(),
   actualStartedAt: z.iso.datetime().optional(),
   actualEndedAt: z.iso.datetime().optional(),
-  quality: z.string().trim().max(120).optional(),
+  quality: z.enum(compatibleExecutionQualityValues).nullable().optional(),
+  focusState: z.enum(executionFocusValues).nullable().optional(),
   obstacle: z.string().trim().max(600).optional(),
   nextAction: z.string().trim().max(600).optional(),
+}).superRefine((value, context) => {
+  if (value.result === "progressed" && (!value.actualMinutes || value.actualMinutes <= 0)) {
+    context.addIssue({ code: "custom", path: ["actualMinutes"], message: "有效推进需要记录大约投入了多少分钟。" });
+  }
+  if (value.result === "no_progress" && (value.actualMinutes ?? 0) > 0) {
+    context.addIssue({ code: "custom", path: ["actualMinutes"], message: "未能推进的投入分钟应为 0；有实际进展请选择“有效推进”。" });
+  }
 });

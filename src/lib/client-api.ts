@@ -1,5 +1,6 @@
 import { enrichGoalsWithScheduleStats, type Goal, type ScheduleItem } from "./demo-data";
 import { zonedDateKey, zonedPeriod } from "./timezone";
+import type { ExecutionFocusState, ExecutionQuality, ExecutionResult } from "@/domain/execution-feedback";
 
 type ApiEnvelope<T> = { data: T };
 
@@ -23,7 +24,7 @@ type ServerBlock = {
   task?: { id: string; title: string } | null; routine?: { id: string; title: string } | null;
   linkedTasks?: Array<{ taskId: string; task?: { id: string; title: string } | null }>;
   occurrenceDate?: string; source?: string; displayMode?: string;
-  executionRecord?: { result: string; actualMinutes?: number | null; actualStartedAt?: string | null; actualEndedAt?: string | null; quality?: string | null; obstacle?: string | null; deviationReason?: string | null; nextAction?: string | null; rhythmFeedback?: { tags: string[]; note?: string | null; comfortable?: boolean | null; timeFit?: string | null } | null } | null;
+  executionRecord?: { result: string; feedbackVersion?: number; actualMinutes?: number | null; actualStartedAt?: string | null; actualEndedAt?: string | null; quality?: string | null; obstacle?: string | null; deviationReason?: string | null; nextAction?: string | null; rhythmFeedback?: { tags: string[]; note?: string | null; comfortable?: boolean | null; timeFit?: string | null; focusState?: string | null } | null } | null;
 };
 
 function goalColor(index: number): Goal["color"] { return (["violet", "sage", "coral"] as const)[index % 3]; }
@@ -60,6 +61,7 @@ export function mapServerBlockToScheduleItem(block: ServerBlock, timezone: strin
     feedback: block.executionRecord?.rhythmFeedback?.tags?.[0],
     execution: block.executionRecord ? {
       result: block.executionRecord.result,
+      feedbackVersion: block.executionRecord.feedbackVersion,
       actualMinutes: block.executionRecord.actualMinutes,
       actualStartedAt: block.executionRecord.actualStartedAt,
       actualEndedAt: block.executionRecord.actualEndedAt,
@@ -71,6 +73,7 @@ export function mapServerBlockToScheduleItem(block: ServerBlock, timezone: strin
       note: block.executionRecord.rhythmFeedback?.note,
       comfortable: block.executionRecord.rhythmFeedback?.comfortable,
       timeFit: block.executionRecord.rhythmFeedback?.timeFit,
+      focusState: block.executionRecord.rhythmFeedback?.focusState,
     } : undefined,
   };
 }
@@ -181,7 +184,7 @@ export async function loadWorkspace(timezone = "Asia/Shanghai"): Promise<{ goals
   const { from, to } = workspaceBootstrapRange();
   const data = await request<{ goals: ServerGoal[]; schedule: ServerBlock[]; rhythmSignals?: RhythmSignalRecord[] }>(`/api/bootstrap?from=${from.toISOString()}&to=${to.toISOString()}`);
   const baseGoals = data.goals.map((goal, index) => ({
-    ...goal, color: goalColor(index), weeklyMinutes: 0, completedMinutes: 0,
+    ...goal, color: goalColor(index), weeklyMinutes: goal.execution?.weekPlannedMinutes ?? 0, completedMinutes: goal.execution?.weekInvestedMinutes ?? 0,
     tasksDone: goal.tasks.filter((task) => task.status === "completed").length, tasksTotal: goal.tasks.length,
   }));
   const schedule = data.schedule.map((block) => mapServerBlockToScheduleItem(block, timezone));
@@ -196,8 +199,9 @@ export const workspaceApi = {
   createOutcome: (goalId: string, description: string) => request<NonNullable<Goal["outcomes"]>[number]>(`/api/goals/${goalId}/outcomes`, { method: "POST", body: JSON.stringify({ description }) }),
   updateOutcome: (id: string, input: { description?: string; completed?: boolean; expectedVersion: number }) => request<NonNullable<Goal["outcomes"]>[number]>(`/api/outcomes/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteOutcome: (id: string, version: number) => request<void>(`/api/outcomes/${id}?version=${version}`, { method: "DELETE" }),
-  createMilestone: (goalId: string, input: { title: string; description?: string }) => request<NonNullable<Goal["milestones"]>[number]>(`/api/goals/${goalId}/milestones`, { method: "POST", body: JSON.stringify(input) }),
-  updateMilestone: (id: string, input: { title?: string; status?: string; expectedVersion: number }) => request<NonNullable<Goal["milestones"]>[number]>(`/api/milestones/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  createMilestone: (goalId: string, input: { title: string; description?: string; targetDate?: string | null; completionCriteria?: NonNullable<Goal["milestones"]>[number]["completionCriteria"] }) => request<NonNullable<Goal["milestones"]>[number]>(`/api/goals/${goalId}/milestones`, { method: "POST", body: JSON.stringify(input) }),
+  updateMilestone: (id: string, input: { title?: string; description?: string; targetDate?: string | null; completionCriteria?: NonNullable<Goal["milestones"]>[number]["completionCriteria"]; status?: string; expectedVersion: number }) => request<NonNullable<Goal["milestones"]>[number]>(`/api/milestones/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  decideMilestoneSuggestion: (id: string, input: { action: "confirm" | "snooze" | "dismiss"; reason?: string }) => request<Record<string, unknown>>(`/api/milestone-suggestions/${id}/decision`, { method: "POST", body: JSON.stringify(input) }),
   archiveMilestone: (id: string, version: number) => request<void>(`/api/milestones/${id}?version=${version}`, { method: "DELETE" }),
   createTask: (goalId: string, input: { title: string; intent?: string; completionCriteria?: string[]; suggestedSteps?: string[]; estimatedMinutes?: number; energyLevel?: string; focusLevel?: string; rhythmConditions?: string[]; milestoneId?: string }) => request<NonNullable<Goal["tasks"]>[number]>(`/api/goals/${goalId}/tasks`, { method: "POST", body: JSON.stringify(input) }),
   updateTask: (id: string, input: { title?: string; intent?: string; completionCriteria?: string[]; suggestedSteps?: string[]; estimatedMinutes?: number; energyLevel?: string; focusLevel?: string; rhythmConditions?: string[]; milestoneId?: string; status?: string; expectedVersion: number }) => request<NonNullable<Goal["tasks"]>[number]>(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
@@ -209,12 +213,13 @@ export const workspaceApi = {
   createSchedule: (input: { title: string; goalId?: string; taskId?: string; taskIds?: string[]; routineId?: string; startsAt: string; endsAt: string }) => request<ServerBlock>("/api/schedule", { method: "POST", body: JSON.stringify(input) }),
   updateSchedule: (id: string, input: { title?: string; goalId?: string | null; taskId?: string | null; taskIds?: string[]; routineId?: string | null; startsAt?: string; endsAt?: string; changeReason?: string; status?: string; moveInPlace?: boolean; expectedVersion: number }) => request<ServerBlock>(`/api/schedule/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteSchedule: (id: string, version: number) => request<void>(`/api/schedule/${id}?version=${version}`, { method: "DELETE" }),
-  recordExecution: (id: string, input: { result: string; tags: string[]; actualMinutes?: number; actualStartedAt?: string; actualEndedAt?: string; quality?: string; obstacle?: string; deviationReason?: string; nextAction?: string; note?: string; comfortable?: boolean; timeFit?: string }) => request<ServerBlock>(`/api/schedule/${id}/execution`, { method: "PUT", body: JSON.stringify(input) }),
-  recordRoutineExecution: (input: { routineId: string; occurrenceDate: string; plannedStartAt?: string; plannedEndAt?: string; status: "completed" | "skipped" | "missed" | "rescheduled"; actualMinutes?: number; feedbackTags?: string[]; note?: string; rescheduledStartAt?: string; rescheduledEndAt?: string }) => request<Record<string, unknown>>("/api/routine-occurrences/execution", { method: "PUT", body: JSON.stringify(input) }),
+  recordExecution: (id: string, input: { feedbackVersion?: 2; result: ExecutionResult; tags?: string[]; actualMinutes?: number; actualStartedAt?: string; actualEndedAt?: string; quality?: ExecutionQuality | null; focusState?: ExecutionFocusState | null; obstacle?: string; deviationReason?: string; nextAction?: string; note?: string | null; comfortable?: boolean; timeFit?: string }) => request<ServerBlock>(`/api/schedule/${id}/execution`, { method: "PUT", body: JSON.stringify(input) }),
+  recordRoutineExecution: (input: { routineId: string; occurrenceDate: string; plannedStartAt?: string; plannedEndAt?: string; status: "completed" | "skipped" | "missed" | "rescheduled"; feedbackVersion?: 2; result?: ExecutionResult; actualMinutes?: number; quality?: ExecutionQuality | null; focusState?: ExecutionFocusState | null; feedbackTags?: string[]; note?: string | null; rescheduledStartAt?: string; rescheduledEndAt?: string }) => request<Record<string, unknown>>("/api/routine-occurrences/execution", { method: "PUT", body: JSON.stringify(input) }),
 };
 
 export type ModelProviderInfo = { id: string; label: string; model: string; baseUrl: string; enabled: boolean };
-export type AgentChangeSet = { id: string; title: string; reason: string; riskLevel: string; operations: Array<Record<string, unknown>> };
+export type AgentChangeSet = { id: string; title: string; reason: string; riskLevel: string; operations: Array<Record<string, unknown>>; revision?: number; supersedesChangeSetId?: string };
+export type AgentChangeSetRevision = Pick<AgentChangeSet, "id" | "title" | "reason" | "operations"> & { revision: number; status: string; createdAt: string; supersedesChangeSetId?: string | null };
 export type AgentRunHistory = {
   id: string;
   status: string;
@@ -295,6 +300,9 @@ export async function streamChatWithAgent(
     conversationSummary?: string;
     business: Record<string, unknown>;
     page: { path: string; selectedEntityId?: string };
+    conversationId?: string;
+    parentRunId?: string;
+    activeChangeSetId?: string;
   },
   onEvent: (event: AgentStreamEvent) => void,
   signal?: AbortSignal,
@@ -353,6 +361,7 @@ export const reviewApi = {
 };
 export const changeSetApi = {
   list: () => request<AgentChangeSet[]>("/api/change-sets"),
+  revisions: (id: string) => request<AgentChangeSetRevision[]>(`/api/change-sets/${id}/revisions`),
   decide: (id: string, approved: boolean, selectedOperationIndexes?: number[]) => request<unknown>(`/api/change-sets/${id}/decision`, { method: "POST", body: JSON.stringify({ approved, selectedOperationIndexes }) }),
 };
 export const agentRunApi = {

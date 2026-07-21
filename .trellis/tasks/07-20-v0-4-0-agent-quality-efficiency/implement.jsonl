@@ -1,0 +1,7 @@
+{"file":".trellis/spec/frontend/agent-runtime.md","reason":"Preserve Agent budgets, tool protocol, evidence ledger, audit persistence and process event ordering."}
+{"file":".trellis/spec/frontend/agent-schedule-planning.md","reason":"Maintain schedule evidence, candidate validation and timezone safety while replacing linear order guards."}
+{"file":".trellis/spec/guides/llm-structured-output.md","reason":"IntentResolution and complex plans use validated structured model outputs with provider-specific fallbacks."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Intent, plan, batch events, persistence, API and trace UI form a cross-layer contract."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Centralize event decoding, evidence metadata and projections instead of duplicating contracts."}
+{"file":".trellis/tasks/07-20-v0-4-0-agent-quality-efficiency/research/current-system.md","reason":"Verified router, runtime, context builder, observability and parallelization baseline."}
+{"file":".trellis/tasks/07-20-v0-4-0-agent-quality-efficiency/research/capability-matrix.md","reason":"Current capability/tool inventory and proposed measurable outputs."}

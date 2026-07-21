@@ -65,10 +65,14 @@ export const planningDraftSchema = z.object({
   })).max(8).default([]),
 });
 
+const changeOperationPayloadSchema = z.record(z.string(), z.unknown()).describe(
+  "Existing persisted entities use goalId/taskId/milestoneId. Entities created in this same ChangeSet use goalRef/taskRef/milestoneRef equal to the parent create operationId; never put a temporary operation ID in an *Id field.",
+);
+
 export const changeOperationSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("create"), entity: z.string(), payload: z.record(z.string(), z.unknown()) }),
-  z.object({ type: z.literal("update"), entity: z.string(), entityId: z.string(), before: z.record(z.string(), z.unknown()), after: z.record(z.string(), z.unknown()) }),
-  z.object({ type: z.literal("archive"), entity: z.string(), entityId: z.string(), before: z.record(z.string(), z.unknown()) }),
+  z.object({ operationId: z.string().min(1).max(80).optional(), fixed: z.boolean().optional(), type: z.literal("create"), entity: z.string(), payload: changeOperationPayloadSchema }),
+  z.object({ operationId: z.string().min(1).max(80).optional(), fixed: z.boolean().optional(), type: z.literal("update"), entity: z.string(), entityId: z.string(), before: z.record(z.string(), z.unknown()), after: z.record(z.string(), z.unknown()) }),
+  z.object({ operationId: z.string().min(1).max(80).optional(), fixed: z.boolean().optional(), type: z.literal("archive"), entity: z.string(), entityId: z.string(), before: z.record(z.string(), z.unknown()) }),
 ]);
 
 export const changeSetDraftSchema = z.object({

@@ -1,6 +1,8 @@
 import { AgentContext, Capability, ContextReference } from "./types";
 import { formatAgentTemporalAnchor } from "@/lib/timezone";
 import { inferScheduleIntentHint } from "./infer-capability";
+import { capabilityCatalog } from "./capability-catalog";
+import type { ContextSourceMetric } from "./types";
 
 export type ContextDataSource = {
   getUser(userId: string): Promise<{ id: string; timezone: string; preferences: Record<string, unknown> }>;
@@ -11,13 +13,8 @@ export type ContextDataSource = {
   getRhythmSignals(userId: string, limit: number): Promise<{ data: unknown; references: ContextReference[] }>;
 };
 
-const contextNeeds: Record<Capability, Array<"goals" | "schedule" | "executions" | "reviews" | "rhythmSignals">> = {
-  goal_clarification: ["goals"],
-  planning: ["goals", "schedule"],
-  review: ["schedule", "executions", "reviews", "rhythmSignals"],
-  adjustment: ["goals", "schedule", "executions", "reviews", "rhythmSignals"],
-  progress_evaluation: ["goals", "executions", "reviews", "rhythmSignals"],
-};
+type ContextBusinessSource = "goals" | "schedule" | "executions" | "reviews" | "rhythmSignals";
+const contextSourceOrder = ["user", "goals", "schedule", "executions", "reviews", "rhythmSignals"] as const;
 
 export class ContextBuilder {
   constructor(private readonly source: ContextDataSource) {}
@@ -28,17 +25,43 @@ export class ContextBuilder {
     page?: AgentContext["page"];
     recentMessages?: AgentContext["conversation"]["recentMessages"];
     conversationSummary?: string;
+    strategy?: "parallel" | "serial";
   }): Promise<AgentContext> {
+    const sourceMetrics: ContextSourceMetric[] = [];
+    const userStartedAt = Date.now();
     const user = await this.source.getUser(input.userId);
-    const needs = contextNeeds[input.capability];
+    sourceMetrics.push({ source: "user", required: true, ok: true, durationMs: Date.now() - userStartedAt, rawCount: 1, estimatedChars: JSON.stringify(user).length });
+    const needs = capabilityCatalog[input.capability].contextSources;
     const business: Record<string, unknown> = {};
     const manifest: ContextReference[] = [];
+    const loaders: Record<ContextBusinessSource, () => Promise<{ data: unknown; references: ContextReference[] }>> = {
+      goals: () => this.source.getGoalContext(input.userId, input.page?.selectedEntity?.entityId),
+      schedule: () => this.source.getScheduleWindow(input.userId, 14),
+      executions: () => this.source.getExecutionHistory(input.userId, 28),
+      reviews: () => this.source.getRecentReviews(input.userId, 4),
+      rhythmSignals: () => this.source.getRhythmSignals(input.userId, 12),
+    };
+    const load = async (key: ContextBusinessSource) => {
+      const startedAt = Date.now();
+      try {
+        const chunk = await loaders[key]();
+        this.merge(key, chunk, business, manifest);
+        sourceMetrics.push({ source: key, required: true, ok: true, durationMs: Date.now() - startedAt, rawCount: Array.isArray(chunk.data) ? chunk.data.length : chunk.data == null ? 0 : 1, estimatedChars: estimateChars(chunk.data) });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "上下文读取失败";
+        sourceMetrics.push({ source: key, required: true, ok: false, durationMs: Date.now() - startedAt, rawCount: 0, estimatedChars: 0, error: message.slice(0, 300) });
+        business[key] = [];
+        manifest.push({ entityType: "context_source_error", entityId: key, reason: message.slice(0, 300) });
+      }
+    };
 
-    if (needs.includes("goals")) this.merge("goals", await this.source.getGoalContext(input.userId, input.page?.selectedEntity?.entityId), business, manifest);
-    if (needs.includes("schedule")) this.merge("schedule", await this.source.getScheduleWindow(input.userId, 14), business, manifest);
-    if (needs.includes("executions")) this.merge("executions", await this.source.getExecutionHistory(input.userId, 28), business, manifest);
-    if (needs.includes("reviews")) this.merge("reviews", await this.source.getRecentReviews(input.userId, 4), business, manifest);
-    if (needs.includes("rhythmSignals")) this.merge("rhythmSignals", await this.source.getRhythmSignals(input.userId, 12), business, manifest);
+    if (input.strategy === "serial") {
+      for (const key of needs) await load(key);
+    } else {
+      await Promise.all(needs.map((key) => load(key)));
+    }
+
+    sourceMetrics.sort((left, right) => contextSourceOrder.indexOf(left.source as (typeof contextSourceOrder)[number]) - contextSourceOrder.indexOf(right.source as (typeof contextSourceOrder)[number]));
 
     return {
       user,
@@ -46,6 +69,7 @@ export class ContextBuilder {
       conversation: { recentMessages: input.recentMessages?.slice(-12) ?? [], summary: input.conversationSummary },
       business,
       manifest,
+      sourceMetrics,
     };
   }
 
@@ -53,6 +77,11 @@ export class ContextBuilder {
     business[key] = chunk.data;
     manifest.push(...chunk.references);
   }
+}
+
+function estimateChars(value: unknown) {
+  try { return JSON.stringify(value).length; }
+  catch { return 0; }
 }
 
 /**

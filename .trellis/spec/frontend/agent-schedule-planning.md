@@ -35,6 +35,8 @@ validate_schedule_candidates(candidates[{ label?, startsAt, endsAt }])
 - A timezone-less Agent input is a wall-clock value in the user timezone. Inputs with `Z` or an explicit offset are absolute instants.
 - Schedule-window output is compact and contains `items`, `busyIntervals`, and `availableIntervals`; it excludes cancelled/rescheduled rows and applies a final exact overlap filter to Routine occurrences.
 - Any concrete time recommendation must use `validate_schedule_candidates`. A schedule ChangeSet must use exactly the candidates from the latest successful validation.
+- If one provider batch contains history lookup, current-window read, and candidate validation, execution stages are `independent reads/history -> fresh current window -> candidate validation`. Independent reads within a stage remain parallel; provider tool messages are still reconstructed in their original call order.
+- Runtime records successful evidence immediately after each execution stage so the next dependent stage sees it. A successfully validated schedule draft persists a compact `scheduleEvidence` fingerprint on its ChangeSet; approval still rechecks the live schedule transactionally.
 
 ### 4. Validation & Error Matrix
 

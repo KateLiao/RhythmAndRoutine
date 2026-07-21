@@ -8,7 +8,6 @@ datasource db {
 }
 
 enum GoalStatus {
-  DRAFT
   ACTIVE
   PAUSED
   COMPLETED
@@ -21,6 +20,20 @@ enum MilestoneStatus {
   COMPLETED
   REJECTED
   ARCHIVED
+}
+
+enum MilestoneSuggestionStatus {
+  PENDING
+  SNOOZED
+  DISMISSED
+  ACCEPTED
+  SUPERSEDED
+}
+
+enum AchievementEventType {
+  UNLOCKED
+  REVOKED
+  RESTORED
 }
 
 enum TaskStatus {
@@ -81,6 +94,7 @@ enum ChangeSetStatus {
   REJECTED
   APPLIED
   FAILED
+  SUPERSEDED
 }
 
 enum TriggerSource {
@@ -113,6 +127,7 @@ model User {
   agentRuns        AgentRun[]
   changeSets       ChangeSet[]
   homeInsightSnapshots HomeInsightSnapshot[]
+  completedMilestones Milestone[] @relation("MilestoneCompletedBy")
 }
 
 model Goal {
@@ -123,7 +138,7 @@ model Goal {
   category    String?
   project     String?
   skill       String?
-  status      GoalStatus @default(DRAFT)
+  status      GoalStatus @default(ACTIVE)
   targetDate  DateTime?
   version     Int        @default(1)
   archivedAt  DateTime?
@@ -135,6 +150,7 @@ model Goal {
   tasks       Task[]
   routines    Routine[]
   scheduleBlocks ScheduleBlock[]
+  achievements GoalAchievement[]
 
   @@index([userId, status])
 }
@@ -158,17 +174,72 @@ model Milestone {
   goalId      String
   title       String
   description String?
+  completionCriteria Json?
   status      MilestoneStatus @default(PENDING)
   targetDate  DateTime?
   completedAt DateTime?
+  completedByUserId String?
   position    Int             @default(0)
   version     Int             @default(1)
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
   goal        Goal            @relation(fields: [goalId], references: [id], onDelete: Restrict)
+  completedBy User?           @relation("MilestoneCompletedBy", fields: [completedByUserId], references: [id], onDelete: SetNull)
   tasks       Task[]
+  reviewSuggestions MilestoneReviewSuggestion[]
 
   @@index([goalId, position])
+}
+
+model MilestoneReviewSuggestion {
+  id                  String                    @id @default(cuid())
+  milestoneId         String
+  milestoneVersion    Int
+  evidenceFingerprint String
+  evidence            Json
+  reason              String
+  status              MilestoneSuggestionStatus @default(PENDING)
+  suggestedAt         DateTime                  @default(now())
+  snoozedUntil        DateTime?
+  decisionReason      String?
+  decidedAt           DateTime?
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  milestone           Milestone                 @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+
+  @@unique([milestoneId, evidenceFingerprint])
+  @@index([milestoneId, status, suggestedAt])
+}
+
+model GoalAchievement {
+  id                String   @id @default(cuid())
+  goalId            String
+  achievementId     String
+  definitionVersion Int
+  unlockedAt        DateTime
+  evidence          Json
+  revokedAt         DateTime?
+  revokeReason      String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  goal              Goal     @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  events            GoalAchievementEvent[]
+
+  @@unique([goalId, achievementId])
+  @@index([goalId, revokedAt, unlockedAt])
+}
+
+model GoalAchievementEvent {
+  id                String               @id @default(cuid())
+  goalAchievementId String
+  type              AchievementEventType
+  occurredAt        DateTime             @default(now())
+  evidence          Json
+  reason            String?
+  idempotencyKey    String               @unique
+  goalAchievement   GoalAchievement      @relation(fields: [goalAchievementId], references: [id], onDelete: Cascade)
+
+  @@index([goalAchievementId, occurredAt])
 }
 
 model Task {
@@ -237,6 +308,10 @@ model RoutineExecutionRecord {
   plannedEndAt      DateTime?
   status            String
   actualMinutes     Int?
+  result            String?
+  quality           String?
+  focusState        String?
+  feedbackVersion   Int      @default(1)
   feedbackTags      String[]
   note              String?
   rescheduledStartAt DateTime?
@@ -302,6 +377,7 @@ model ExecutionRecord {
   obstacle           String?
   deviationReason    String?
   nextAction         String?
+  feedbackVersion    Int      @default(1)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   scheduleBlock      ScheduleBlock @relation(fields: [scheduleBlockId], references: [id], onDelete: Restrict)
@@ -315,6 +391,7 @@ model RhythmFeedback {
   note              String?
   comfortable       Boolean?
   timeFit            String?
+  focusState         String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   executionRecord   ExecutionRecord @relation(fields: [executionRecordId], references: [id], onDelete: Restrict)
@@ -366,6 +443,13 @@ model AgentRun {
   maxSteps      Int            @default(12)
   maxTokens     Int?
   inputSummary  String?
+  intentResolution Json?
+  executionPlan Json?
+  contextMetrics Json?
+  conversationId String?
+  parentRunId    String?
+  continuationKind String?
+  continuationState Json?
   finalSummary  String?
   exitReason    String?
   goalStatus    String?
@@ -380,8 +464,12 @@ model AgentRun {
   steps         AgentStep[]
   contextItems  ContextManifestItem[]
   changeSets    ChangeSet[]
+  parentRun     AgentRun?       @relation("AgentRunContinuation", fields: [parentRunId], references: [id], onDelete: SetNull)
+  childRuns     AgentRun[]      @relation("AgentRunContinuation")
 
   @@index([userId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([parentRunId])
 }
 
 model AgentStep {
@@ -412,6 +500,9 @@ model ToolCall {
   id            String   @id @default(cuid())
   agentStepId   String
   toolName      String
+  toolCallId    String?
+  batchId       String?
+  completionOrder Int?
   risk          ToolRisk
   input         Json
   output        Json?
@@ -446,6 +537,9 @@ model ChangeSet {
   riskLevel      String
   operations     Json
   baseVersions   Json
+  revision       Int             @default(1)
+  scheduleEvidence Json?
+  supersedesChangeSetId String?  @unique
   decisionNote   String?
   decidedAt      DateTime?
   appliedAt      DateTime?
@@ -454,8 +548,11 @@ model ChangeSet {
   updatedAt      DateTime        @updatedAt
   user           User            @relation(fields: [userId], references: [id], onDelete: Restrict)
   agentRun       AgentRun?       @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+  supersedes     ChangeSet?      @relation("ChangeSetRevision", fields: [supersedesChangeSetId], references: [id], onDelete: Restrict)
+  supersededBy   ChangeSet?      @relation("ChangeSetRevision")
 
   @@index([userId, status])
+  @@index([userId, supersedesChangeSetId])
 }
 
 model HomeInsightSnapshot {

@@ -7,6 +7,75 @@ export type Capability =
   | "adjustment"
   | "progress_evaluation";
 
+export type AgentRoute = "agent" | "non_execution";
+
+export type AdjustmentKind =
+  | "itinerary_create"
+  | "proposal_patch"
+  | "proposal_reorder"
+  | "proposal_item_reschedule"
+  | "existing_adjustment";
+
+export type ProposalOperationRef = {
+  ordinal?: number;
+  title?: string;
+};
+
+export type AdjustmentResolution = {
+  kind: AdjustmentKind;
+  conversationId?: string;
+  continuationOfRunId?: string;
+  changeSetId?: string;
+  operationRefs: ProposalOperationRef[];
+  timingSpecified: boolean;
+  confidence: number;
+  startTime?: string;
+  endTime?: string;
+  /** 用户原始时间表达；仅在不能安全地直接解释为 24 小时时保留给有界模型判断。 */
+  timeExpression?: string;
+  timeAmbiguous?: boolean;
+  timeRelation?: "earlier" | "later" | "neutral";
+};
+
+export type ResolvedIntent = {
+  id: string;
+  capability: Capability;
+  objective: string;
+  confidence: number;
+  slots: Record<string, unknown>;
+  missingSlots: string[];
+};
+
+export type IntentResolution = {
+  route: AgentRoute;
+  primaryCapability?: Capability;
+  intents: ResolvedIntent[];
+  overallConfidence: number;
+  needsClarification: boolean;
+  clarificationReason?: string;
+  source: "rules" | "model" | "hybrid";
+  degraded?: boolean;
+  adjustment?: AdjustmentResolution;
+};
+
+export type ExecutionPlanStep = {
+  id: string;
+  intentId: string;
+  objective: string;
+  capability: Capability;
+  dependsOn: string[];
+  toolHints: string[];
+  access: "read" | "draft_write" | "user_confirmation";
+  successCondition: string;
+  failureStrategy: "stop" | "retry" | "degrade" | "ask_user";
+};
+
+export type ExecutionPlan = {
+  planId: string;
+  intentIds: string[];
+  steps: ExecutionPlanStep[];
+};
+
 export type AgentRunStatus =
   | "queued"
   | "running"
@@ -59,6 +128,17 @@ export type AgentContext = {
   conversation: { recentMessages: Array<{ role: "user" | "assistant"; content: string }>; summary?: string };
   business: Record<string, unknown>;
   manifest: ContextReference[];
+  sourceMetrics?: ContextSourceMetric[];
+};
+
+export type ContextSourceMetric = {
+  source: "user" | "goals" | "schedule" | "executions" | "reviews" | "rhythmSignals";
+  required: boolean;
+  ok: boolean;
+  durationMs: number;
+  rawCount: number;
+  estimatedChars: number;
+  error?: string;
 };
 
 export type ModelMessage = {
@@ -111,19 +191,32 @@ export type StructuredRequest<T> = {
   signal?: AbortSignal;
   /** schema 校验失败时的最大重试次数（默认 2，即最多 3 次请求） */
   maxRetries?: number;
+  /** 仅用于兼容供应商常见字段别名；归一化后仍必须通过原始 schema。 */
+  normalize?: (value: unknown) => unknown;
+  /** 结构化调用的实际 Token 用量；每次 provider 请求返回 usage 时触发。 */
+  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
 };
 
 export type ToolResult = { ok: true; data: unknown } | { ok: false; code: string; message: string; retryable: boolean };
 
 export type AgentTool = ModelTool & {
   risk: ToolRisk;
+  policy: ToolExecutionPolicy;
   execute: (input: unknown, execution: ToolExecutionContext) => Promise<ToolResult>;
+};
+
+export type ToolExecutionPolicy = {
+  parallelSafe: boolean;
+  access: ToolRisk;
+  resourceKeys: (input: unknown) => string[];
+  requiresEvidence?: string[];
 };
 
 export type ToolExecutionContext = {
   userId: string;
   runId: string;
   idempotencyKey: string;
+  scheduleEvidence?: unknown;
 };
 
 export type RunEvent =
@@ -143,5 +236,9 @@ export type AgentRunRequest = {
   prompt: string;
   model: string;
   context: AgentContext;
+  intentResolution?: IntentResolution;
+  executionPlan?: ExecutionPlan;
+  conversationId?: string;
+  parentRunId?: string;
   signal?: AbortSignal;
 };

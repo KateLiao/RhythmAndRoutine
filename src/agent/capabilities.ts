@@ -36,7 +36,7 @@ export const capabilityPolicies: Record<Capability, CapabilityPolicy> = {
     allowedTools: ["read_goal_context"], maxSteps: 6, maxOutputTokens: 1200, maxRunTokens: 24_000, requiresApprovalForWrites: true,
   },
   planning: {
-    system: `${commonBoundary}${schedulePlanningBoundary}\n生成 Outcome、Milestone、Task 与 Routine 的结构化规划。Goal 的 project、skill、targetDate 必须写入对应结构化字段，不能拼进 description。任务必须有意图、完成标准、预计耗时和节奏匹配条件。Routine 必须作为 routine_draft 提议，包含 title、reason、linkedGoal、startDate、endDate、durationMinutes、recurrenceRule、preferredStartTime、preferredEndTime 与 preferredTime；时间范围和有效期不得写入 reason 或 minimumVersion，minimumVersion 只能描述状态不佳时仍可完成的退阶动作；不得为未来重复执行批量创建 schedule。优先使用 propose_planning；若使用 propose_change_set，entity 必须用小写（goal/milestone/task/routine/schedule/outcome），create 操作必须带可读 title（outcome 用 description）。`,
+    system: `${commonBoundary}${schedulePlanningBoundary}\n生成 Outcome、Milestone、Task 与 Routine 的结构化规划。Goal 的 project、skill、targetDate 必须写入对应结构化字段，不能拼进 description。任务必须有意图、完成标准、预计耗时和节奏匹配条件。Routine 必须作为 routine_draft 提议，包含 title、reason、linkedGoal、startDate、endDate、durationMinutes、recurrenceRule、preferredStartTime、preferredEndTime 与 preferredTime；时间范围和有效期不得写入 reason 或 minimumVersion，minimumVersion 只能描述状态不佳时仍可完成的退阶动作；不得为未来重复执行批量创建 schedule。优先使用 propose_planning；若使用 propose_change_set，entity 必须用小写（goal/milestone/task/routine/schedule/outcome），create 操作必须带可读 title（outcome 用 description）。同一 ChangeSet 内新建父实体时，子操作必须用 goalRef/taskRef/milestoneRef 指向父 create 操作的 operationId；goalId/taskId/milestoneId 只用于已经存在的数据库实体。`,
     allowedTools: ["read_goal_context", "read_schedule_window", "read_similar_schedule_history", "validate_schedule_candidates", "propose_planning"], maxSteps: 12, maxOutputTokens: 3000, maxRunTokens: 64_000, requiresApprovalForWrites: true,
   },
   review: {
@@ -51,7 +51,7 @@ export const capabilityPolicies: Record<Capability, CapabilityPolicy> = {
 3. routine：长期重复规则（每天/每周），含 recurrenceRule + goalId + durationMinutes；不得用 schedule 批量生成重复块。
 判定顺序：重复语义→routine；占位/外部占用且无目标任务→personal_schedule；推进目标/任务→schedule；无法区分则追问。
 调整已有日程前先用 read_schedule_window，根据返回的 blockKind 选择 entity：personal 用 personal_schedule，goal_task 用 schedule；routine_occurrence 实例不要直接改 schedule 块。
-使用 propose_change_set 时 entity 必须用小写；personal_schedule 与 schedule 的 create 必须含可读 title 与明确时间。`,
+使用 propose_change_set 时 entity 必须用小写；personal_schedule 与 schedule 的 create 必须含可读 title 与明确时间。同一 ChangeSet 同时新建目标和日程时，目标 create 必须有稳定 operationId，日程用 goalRef 指向该 operationId；不得把临时 operationId 填入 goalId。`,
     allowedTools: ["read_goal_context", "read_schedule_window", "read_similar_schedule_history", "validate_schedule_candidates", "read_execution_history", "read_rhythm_signals", "propose_change_set"], maxSteps: 12, maxOutputTokens: 2600, maxRunTokens: 64_000, requiresApprovalForWrites: true,
   },
   progress_evaluation: {

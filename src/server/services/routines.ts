@@ -3,6 +3,9 @@ import { getDb } from "@/lib/db";
 import { zonedDateTimeToUtc, zonedParts } from "@/lib/timezone";
 import { DomainError } from "@/server/api-response";
 import { routineExecutionSchema } from "@/server/validation";
+import { evaluateGoalAchievementsBestEffort } from "@/server/services/goal-execution";
+import { evaluateMilestoneSuggestionsBestEffort } from "@/server/services/milestone-suggestions";
+import { EXECUTION_FEEDBACK_VERSION, isExecutionFeedbackV2Result } from "@/domain/execution-feedback";
 
 const weekdayMap: Record<string, number> = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
 
@@ -19,15 +22,24 @@ export type ExpandedRoutineOccurrence = {
   source: "routine_occurrence";
   blockKind: "routine_occurrence";
   displayMode: string;
-  executionRecord?: { result: string; actualMinutes: number | null; rhythmFeedback: { tags: string[]; note: string | null } };
+  executionRecord?: { result: string; actualMinutes: number | null; quality: string | null; feedbackVersion: number; rhythmFeedback: { tags: string[]; note: string | null; focusState: string | null } };
 };
 
 /** Expand active Routine definitions for a calendar window without creating ScheduleBlock rows. */
 export async function expandRoutineOccurrences(userId: string, from: Date, to: Date): Promise<ExpandedRoutineOccurrence[]> {
+  return expandRoutineOccurrencesWithClient(getDb(), userId, from, to);
+}
+
+/** 在 ChangeSet 应用事务内展开 Routine，保证最终冲突校验看到同一事务快照。 */
+export async function expandRoutineOccurrencesTx(tx: Prisma.TransactionClient, userId: string, from: Date, to: Date): Promise<ExpandedRoutineOccurrence[]> {
+  return expandRoutineOccurrencesWithClient(tx, userId, from, to);
+}
+
+async function expandRoutineOccurrencesWithClient(client: Pick<Prisma.TransactionClient, "user" | "routine">, userId: string, from: Date, to: Date): Promise<ExpandedRoutineOccurrence[]> {
   if (!(from < to) || to.getTime() - from.getTime() > 93 * 86400000) throw new DomainError("INVALID_RANGE", "Routine 展开范围必须在 93 天以内。", 400);
-  const user = await getDb().user.findFirst({ where: { id: userId }, select: { timezone: true } });
+  const user = await client.user.findFirst({ where: { id: userId }, select: { timezone: true } });
   const timezone = user?.timezone ?? "Asia/Shanghai";
-  const routines = await getDb().routine.findMany({
+  const routines = await client.routine.findMany({
     where: { status: "ACTIVE", archivedAt: null, startDate: { lt: to }, OR: [{ endDate: null }, { endDate: { gte: from } }], goal: { userId } },
     include: { executionRecords: { where: { occurrenceDate: { gte: from, lt: to } } } },
   });
@@ -56,7 +68,7 @@ export async function expandRoutineOccurrences(userId: string, from: Date, to: D
         source: "routine_occurrence" as const,
         blockKind: "routine_occurrence" as const,
         displayMode: routine.displayMode,
-        ...(record && { executionRecord: { result: record.status, actualMinutes: record.actualMinutes, rhythmFeedback: { tags: record.feedbackTags, note: record.note } } }),
+        ...(record && { executionRecord: { result: record.result ?? record.status, actualMinutes: record.actualMinutes, quality: record.quality, feedbackVersion: record.feedbackVersion, rhythmFeedback: { tags: record.feedbackTags, note: record.note, focusState: record.focusState } } }),
       };
     });
   }).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
@@ -68,11 +80,16 @@ export async function recordRoutineExecution(userId: string, raw: unknown) {
   const routine = await getDb().routine.findFirst({ where: { id: input.routineId, archivedAt: null, goal: { userId } } });
   if (!routine) throw new DomainError("ROUTINE_NOT_FOUND", "没有找到这个 Routine。", 404);
   const occurrenceDate = new Date(input.occurrenceDate);
+  const isV2 = input.feedbackVersion === EXECUTION_FEEDBACK_VERSION || isExecutionFeedbackV2Result(input.result);
   const updateData: Prisma.RoutineExecutionRecordUpdateInput = {
     status: input.status,
     actualMinutes: input.actualMinutes,
     feedbackTags: input.feedbackTags,
     note: input.note,
+    result: input.result,
+    quality: input.quality,
+    focusState: input.focusState,
+    ...(isV2 ? { feedbackVersion: EXECUTION_FEEDBACK_VERSION } : {}),
   };
   if (input.rescheduledStartAt !== undefined) {
     updateData.rescheduledStartAt = input.rescheduledStartAt ? new Date(input.rescheduledStartAt) : null;
@@ -86,7 +103,7 @@ export async function recordRoutineExecution(userId: string, raw: unknown) {
   if (input.plannedEndAt !== undefined) {
     updateData.plannedEndAt = input.plannedEndAt ? new Date(input.plannedEndAt) : null;
   }
-  return getDb().routineExecutionRecord.upsert({
+  const record = await getDb().routineExecutionRecord.upsert({
     where: { routineId_occurrenceDate: { routineId: routine.id, occurrenceDate } },
     create: {
       routineId: routine.id,
@@ -95,13 +112,22 @@ export async function recordRoutineExecution(userId: string, raw: unknown) {
       plannedEndAt: input.plannedEndAt ? new Date(input.plannedEndAt) : null,
       status: input.status,
       actualMinutes: input.actualMinutes,
-      feedbackTags: input.feedbackTags,
+      feedbackTags: input.feedbackTags ?? [],
       note: input.note,
+      result: input.result,
+      quality: input.quality,
+      focusState: input.focusState,
+      feedbackVersion: isV2 ? EXECUTION_FEEDBACK_VERSION : 1,
       rescheduledStartAt: input.rescheduledStartAt ? new Date(input.rescheduledStartAt) : null,
       rescheduledEndAt: input.rescheduledEndAt ? new Date(input.rescheduledEndAt) : null,
     },
     update: updateData,
   });
+  if (input.status === "completed") await Promise.all([
+    evaluateGoalAchievementsBestEffort([routine.goalId]),
+    evaluateMilestoneSuggestionsBestEffort([routine.goalId]),
+  ]);
+  return record;
 }
 
 export function parseRecurrenceRule(value: string) {

@@ -1,6 +1,6 @@
 # Rhythm & Routine
 
-AI Native 的个人目标推进系统（**v0.3.1**）。当前版本已经可以在没有数据库和 AI Key 的情况下运行，目标、Task、Routine、内部日程和执行反馈会保存在浏览器中；连接 PostgreSQL 后自动切换为数据库模式。
+AI Native 的个人目标推进系统（**v0.4.0**）。当前版本已经可以在没有数据库和 AI Key 的情况下运行，目标、Task、Routine、内部日程和执行反馈会保存在浏览器中；连接 PostgreSQL 后自动切换为数据库模式。
 
 ## 直接运行
 
@@ -35,11 +35,23 @@ npm run db:migrate -- --name <migration-name>
 npm run db:seed
 ```
 
+`npm run dev` 会在启动前自动同步 Prisma Client。修改 `prisma/schema.prisma`
+或执行迁移后，如果开发服务已经在运行，仍需重启服务，避免 Turbopack 继续使用旧的数据模型。
+
 ## AI 模型
 
 Agent Harness 已包含 Runtime、Context Builder、Tool Registry、目标驱动 Loop、Trace 和 ChangeSet 人工确认边界，并通过 OpenAI-compatible 适配器支持 Qwen、DeepSeek、MiniMax、OpenAI、Moonshot、智谱、OpenRouter、SiliconFlow 和自定义供应商。
 
-复制 `.env.example` 为 `.env`，填写所需供应商的 API Key，并通过 `DEFAULT_MODEL_PROVIDER` 选择默认供应商。模型名称和接口地址都可独立覆盖；没有任何 AI Key 时，目标、任务、Routine、日历、反馈与 Review 等手动功能仍可使用。
+复制 `.env.example` 为私有 `.env`，填写所需供应商的 API Key，并通过 `AI_DEFAULT_PROVIDER` 选择默认供应商。模型名称和接口地址都可独立覆盖；没有任何 AI Key 时，目标、任务、Routine、日历、反馈与 Review 等手动功能仍可使用。V0.4.0 的模型意图路由默认关闭；先运行真实模型抽样，通过后再把 `AGENT_MODEL_ROUTER_ENABLED` 设为 `1`。
+
+## v0.4.0 更新
+
+- **目标进展改为真实发生**：目标列表不再用任务数量计算百分比，改为展示本周真实投入、有效执行日、最近成就和下一步行动；旧“待澄清/已确认”入口统一为目标生命周期状态。
+- **公开成就收藏**：按基础、项目、技能和 Routine 模块复用 16 类公开成就事件；不同目标类型组合不同收藏，解锁历史持久化且普通数据回退不会撤销成就。
+- **证据型里程碑**：里程碑支持任务完成、Routine 次数、真实投入和有效执行日等公开条件；满足条件只生成待检查提醒，最终仍由用户确认。历史同名记录只在详情页汇总展示，不改写旧数据。
+- **Agent 结构化意图与计划**：规则 Resolver 支持多意图、消息优先于页面、阻塞字段识别与非执行问答；复杂请求生成带依赖、工具白名单和确认屏障的 ExecutionPlan，并写入 Run 追踪。
+- **受控并行执行**：上下文独立来源并行读取且保留部分失败；同批最多并行 3 个无依赖只读工具。读写混批、多个写草案和缺少前置证据会被确定性拦截，写草案重试复用语义幂等键。
+- **Agent QA 门禁**：固定 Router 120、Planner 30、Runtime 30、Performance 10 例，输出基线对比、混淆矩阵、安全不变量与 P50/P95；真实模型抽样独立于确定性 PR 门禁。
 
 ## v0.3.1 更新
 
@@ -88,8 +100,12 @@ Agent Harness 已包含 Runtime、Context Builder、Tool Registry、目标驱动
 npm run typecheck
 npm run lint
 npm run prisma:validate
+npm run test:goal-execution
+npm run test:agent-quality
+npm run eval:agent
+npm run eval:agent:model-sample
 npm run build
 npm audit --omit=dev
 ```
 
-产品与架构范围见 [`docs/development-spec.md`](docs/development-spec.md)。v0.3.0 需求说明见 [`docs/v0.3.0 版本需求/`](docs/v0.3.0%20版本需求/)；v0.2.0 见 [`docs/v0.2.0 版本需求/`](docs/v0.2.0%20版本需求/)。
+产品与架构范围见 [`docs/development-spec.md`](docs/development-spec.md)。v0.4.0 的实现任务与验收证据位于 [`.trellis/tasks/07-20-v0-4-0-optimization-plan/`](.trellis/tasks/07-20-v0-4-0-optimization-plan/)；v0.3.0 需求说明见 [`docs/v0.3.0 版本需求/`](docs/v0.3.0%20版本需求/)。

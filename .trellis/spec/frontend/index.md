@@ -22,6 +22,8 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
 | [Agent Schedule Planning](./agent-schedule-planning.md) | Query planning, timezone, availability and deterministic validation contracts | Active |
 | [Agent Runtime](./agent-runtime.md) | Token budgets, tool evidence compression and chronological process-event contracts | Active |
+| [Goal Execution Feedback](./goal-execution-feedback.md) | Real investment, feedback V2 compatibility, public achievements, milestone evidence and lifecycle migration contracts | Active |
+| [Review Schedule Projection](./review-schedule-projection.md) | Final-schedule projection rules for review facts over retained reschedule history | Active |
 
 ---
 

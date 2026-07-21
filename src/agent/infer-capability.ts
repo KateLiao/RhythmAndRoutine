@@ -1,6 +1,5 @@
 import type { Capability } from "./types";
-
-type AgentView = "today" | "goals" | "goal-detail" | "task-detail" | "routines" | "review" | "settings";
+import { resolveIntent, type AgentView } from "./intent-resolver";
 
 const PERSONAL_SCHEDULE_PATTERN = /会议|周会|例会|面试|约会|聚餐|通勤|午休|睡觉|没空|占用|占位|阻塞|个人日程|日历上标|外部|飞书|outlook|请假|看病|体检|理发/i;
 const GOAL_SCHEDULE_PATTERN = /安排|排到|推进|投入|专注|任务|做.{1,20}|排到日历|放进日程/i;
@@ -16,7 +15,7 @@ const CLARIFY_PATTERN = /澄清/;
  * @param view - 当前页面视图
  * @param selectedGoalId - 当前选中的目标 ID（若有）
  */
-export function inferCapability(prompt: string, view: AgentView, selectedGoalId?: string | null): Capability {
+export function inferLegacyCapability(prompt: string, view: AgentView, selectedGoalId?: string | null): Capability {
   if (REVIEW_PATTERN.test(prompt) || view === "review") return "review";
   if (view === "routines" || ROUTINE_PATTERN.test(prompt)) return "adjustment";
   if (PROGRESS_PATTERN.test(prompt)) return "progress_evaluation";
@@ -29,6 +28,13 @@ export function inferCapability(prompt: string, view: AgentView, selectedGoalId?
   }
 
   return "adjustment";
+}
+
+/**
+ * 返回结构化 Resolver 的主能力，保留旧调用点的单值接口。
+ */
+export function inferCapability(prompt: string, view: AgentView, selectedGoalId?: string | null): Capability {
+  return resolveIntent({ prompt, view, selectedGoalId }).primaryCapability ?? "adjustment";
 }
 
 /**

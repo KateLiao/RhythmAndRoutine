@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   enrichGoalsWithScheduleStats,
+  enrichLocalGoalsWithExecution,
   scheduleBelongsToGoal,
   scheduleInvestedMinutes,
   type Goal,
@@ -80,6 +81,26 @@ describe("enrichGoalsWithScheduleStats", () => {
     const enriched = enrichGoalsWithScheduleStats(goals, schedule, new Set(["2026-07-14"]));
     assert.equal(enriched[0].completedMinutes, 40);
     assert.equal(enriched[0].weeklyMinutes, 60 + 90);
+  });
+});
+
+describe("enrichLocalGoalsWithExecution", () => {
+  it("persists unlocked achievements and deterministic milestone suggestions in browser-local data", () => {
+    const goals = [goal({
+      id: "g1",
+      title: "本地目标",
+      category: "project",
+      milestones: [{ id: "m1", title: "投入半小时", status: "pending", version: 1, completionCriteria: { version: 1, mode: "all", items: [{ id: "time", label: "累计真实投入 30 分钟", evaluator: "invested_minutes", threshold: 30 }] } }],
+    })];
+    const schedule = [block({ id: "b1", title: "完成", goalId: "g1", date: "2026-07-14", execution: { result: "completed", actualMinutes: 40, tags: [] } })];
+    const first = enrichLocalGoalsWithExecution(goals, schedule, "Asia/Shanghai", new Date("2026-07-15T04:00:00.000Z"));
+    const second = enrichLocalGoalsWithExecution(first, schedule, "Asia/Shanghai", new Date("2026-07-16T04:00:00.000Z"));
+
+    assert.equal(first[0].execution?.weekInvestedMinutes, 40);
+    assert.equal(first[0].execution?.achievements.find((item) => item.id === "core.first_investment")?.state, "unlocked");
+    assert.equal(second[0].achievementHistory?.find((item) => item.achievementId === "core.first_investment")?.unlockedAt, first[0].achievementHistory?.find((item) => item.achievementId === "core.first_investment")?.unlockedAt);
+    assert.equal(first[0].milestones?.[0]?.reviewSuggestions?.[0]?.status, "pending");
+    assert.equal(second[0].milestones?.[0]?.reviewSuggestions?.length, 1);
   });
 });
 

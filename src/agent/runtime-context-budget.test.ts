@@ -4,7 +4,7 @@ import { z } from "zod";
 import { AgentRuntime, type AgentRunStore, buildBudgetGuidance } from "./runtime";
 import type { AgentTool, ModelAdapter, ModelRequest } from "./types";
 
-test("runtime persists its budget, carries compact evidence, and keeps only the latest tool protocol batch", async () => {
+test("runtime persists its budget, carries compact evidence, caches identical reads, and keeps only the latest tool protocol batch", async () => {
   const requests: ModelRequest[] = [];
   let modelCall = 0;
   let toolCall = 0;
@@ -27,6 +27,7 @@ test("runtime persists its budget, carries compact evidence, and keeps only the 
     name: "read_goal_context",
     description: "test",
     risk: "read",
+    policy: { parallelSafe: true, access: "read", resourceKeys: () => ["goal:goal-1"] },
     inputSchema: z.object({ goalId: z.string() }),
     async execute() {
       toolCall += 1;
@@ -53,8 +54,8 @@ test("runtime persists its budget, carries compact evidence, and keeps only the 
   assert.equal(created[0]?.maxTokens, 24_000);
   assert.equal(created[0]?.maxSteps, 6);
   assert.deepEqual(requests.map((request) => request.messages.length), [1, 3, 3]);
-  assert.match(requests[2]?.system ?? "", /目标版本 2/);
-  assert.doesNotMatch(requests[2]?.system ?? "", /目标版本 1/);
+  assert.equal(toolCall, 1, "an identical read in one Run must not access the data source twice");
+  assert.match(requests[2]?.system ?? "", /目标版本 1/);
   assert.ok(JSON.stringify(persistedToolOutputs).length > 20_000, "audit storage must receive the uncompressed result");
 });
 

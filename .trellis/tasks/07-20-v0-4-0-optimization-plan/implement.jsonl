@@ -1,0 +1,6 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"The release integrates database, service, API, Agent runtime and UI contracts."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Shared facts and evidence must have one owner across goal and Agent workstreams."}
+{"file":".trellis/spec/frontend/agent-runtime.md","reason":"Agent improvements must preserve runtime evidence, budget and event contracts."}
+{"file":".trellis/tasks/07-20-v0-4-0-goal-execution/research/goal-status-decision.md","reason":"Confirmed lifecycle model and zero-loss migration governs release sequencing."}
+{"file":".trellis/tasks/07-20-v0-4-0-goal-execution/research/achievement-data-snapshot.md","reason":"Current-data sample anchors achievement and migration validation."}
+{"file":".trellis/tasks/07-20-v0-4-0-agent-quality-efficiency/research/capability-matrix.md","reason":"Agent capability and tool inventory anchors the release QA scope."}

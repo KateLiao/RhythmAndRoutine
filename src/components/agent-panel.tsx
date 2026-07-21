@@ -31,6 +31,7 @@ import {
   streamChatWithAgent,
   summarizeConversation,
   type AgentChangeSet,
+  type AgentChangeSetRevision,
   type AgentStreamEvent,
   type UserSettings,
 } from "@/lib/client-api";
@@ -41,7 +42,9 @@ import {
   clearContext,
   consumeClearUndo,
   countInContextTurns,
+  getActiveParentRunId,
   getContextMessages,
+  getActivePendingChangeSetId,
   getConversationSummary,
   getOverflowMessagesForSummary,
   getPanelExpanded,
@@ -61,6 +64,7 @@ import {
   type StoredMessage,
 } from "@/lib/conversation-store";
 import { newConversationNotice } from "@/lib/agent-conversation-ui";
+import { resolveAgentPageGoalId } from "@/lib/agent-page-context";
 import type { Goal, ScheduleItem } from "@/lib/demo-data";
 
 type AgentView = "today" | "goals" | "goal-detail" | "task-detail" | "routines" | "review" | "settings";
@@ -92,7 +96,7 @@ const VIEW_LABELS: Record<AgentView, string> = {
   settings: "设置",
 };
 
-const WELCOME_TEXT = "我已经看过当前页面的目标和日程。想一起梳理什么？";
+const WELCOME_TEXT = "我会根据当前页面理解你的请求；只有在目标详情页才会自动关联该目标。想一起梳理什么？";
 
 const CHANGE_FIELD_LABELS: Record<string, string> = {
   title: "名称",
@@ -313,6 +317,7 @@ export function AgentPanel({
   view,
   provider,
   model,
+  dataMode,
   selectedGoalId,
   onApply,
   onReject,
@@ -324,10 +329,13 @@ export function AgentPanel({
   view: AgentView;
   provider: string;
   model: string;
+  dataMode: "checking" | "database" | "local";
   selectedGoalId: string | null;
   onApply: (changeSet: AgentChangeSet, indexes: number[]) => Promise<void>;
   onReject: (changeSet: AgentChangeSet) => Promise<void>;
 }) {
+  // 防御性收口：即使调用方错误保留了旧 selectedGoalId，非目标详情页也不允许形成隐式目标上下文。
+  const contextGoalId = resolveAgentPageGoalId(view, selectedGoalId);
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<PanelMessage[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -341,6 +349,9 @@ export function AgentPanel({
   const [selectedOps, setSelectedOps] = useState<Set<number>>(new Set());
   const [changeSetMessageId, setChangeSetMessageId] = useState<string | null>(null);
   const [changeSetVisible, setChangeSetVisible] = useState(true);
+  const [revisionHistory, setRevisionHistory] = useState<AgentChangeSetRevision[] | null>(null);
+  const [revisionHistoryOpen, setRevisionHistoryOpen] = useState(false);
+  const [revisionHistoryError, setRevisionHistoryError] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [confirmNew, setConfirmNew] = useState<NewConversationConfirm | null>(null);
@@ -666,7 +677,7 @@ export function AgentPanel({
       patchStreamingSteps((steps) => [...steps, {
         id: `${event.kind}-${steps.length}`,
         label: event.label,
-        status: event.kind === "recovery" || event.goalStatus === "blocked" ? "failed" : event.goalStatus === "awaiting_confirmation" ? "confirm" : "done",
+        status: event.goalStatus === "blocked" || (event.kind === "recovery" && event.label === "工具失败恢复") ? "failed" : event.goalStatus === "awaiting_confirmation" ? "confirm" : "done",
         summary: event.summary,
         detail: event.detail,
       }], generation);
@@ -772,6 +783,8 @@ export function AgentPanel({
       const pending = items.find((item) => session.pendingChangeSetIds.includes(item.id));
       if (pending) {
         setChangeSet(pending);
+        setRevisionHistory(null);
+        setRevisionHistoryOpen(false);
         setChangeSetTerminal("pending");
         setSelectedOps(new Set(pending.operations.map((_, index) => index)));
         const lastAssistant = [...loadMessages()].reverse().find((message) => message.role === "assistant" && message.kind !== "welcome");
@@ -788,6 +801,12 @@ export function AgentPanel({
    */
   const sendPrompt = useCallback(async (prompt: string) => {
     if (!prompt.trim() || loading) return;
+    if (dataMode !== "database") {
+      setError(dataMode === "checking"
+        ? "正在确认数据库连接，请稍后再让小律调整计划。"
+        : "当前是本地模式，无法安全读取服务端提案修订链与冲突证据。你仍可使用页面上的“安排事情”和日程编辑功能手动调整。");
+      return;
+    }
 
     if (hasUndoableClear()) consumeClearUndo();
     setCanUndoClear(false);
@@ -797,7 +816,8 @@ export function AgentPanel({
     const assistantId = crypto.randomUUID();
     const contextHistory = getContextMessages();
     const conversationSummary = getConversationSummary();
-    const scopedGoals = selectedGoalId ? goals.filter((goal) => goal.id === selectedGoalId) : goals;
+    const session = getSession();
+    const scopedGoals = contextGoalId ? goals.filter((goal) => goal.id === contextGoalId) : goals;
 
     streamingStepsRef.current = [];
     const generation = streamGenerationRef.current + 1;
@@ -822,7 +842,7 @@ export function AgentPanel({
       const result = await streamChatWithAgent(
         {
           prompt,
-          capability: inferCapability(prompt, view, selectedGoalId),
+          capability: inferCapability(prompt, view, contextGoalId),
           provider,
           model: model || undefined,
           messages: contextHistory,
@@ -834,7 +854,10 @@ export function AgentPanel({
             today: currentDateKey(),
             timezone: currentTimezone(),
           },
-          page: { path: view, selectedEntityId: selectedGoalId ?? undefined },
+          page: { path: view, selectedEntityId: contextGoalId ?? undefined },
+          conversationId: session.id,
+          parentRunId: getActiveParentRunId(),
+          activeChangeSetId: getActivePendingChangeSetId(),
         },
         (event) => handleStreamEvent(event, generation),
         abortController.signal,
@@ -870,7 +893,11 @@ export function AgentPanel({
       }]);
 
       if (result.changeSet) {
+        if (result.changeSet.supersedesChangeSetId) untrackPendingChangeSet(result.changeSet.supersedesChangeSetId);
         setChangeSet(result.changeSet);
+        setRevisionHistory(null);
+        setRevisionHistoryOpen(false);
+        setRevisionHistoryError(null);
         setChangeSetTerminal("pending");
         setChangeSetMessageId(assistantId);
         setSelectedOps(new Set(result.changeSet.operations.map((_, index) => index)));
@@ -919,7 +946,7 @@ export function AgentPanel({
         abortControllerRef.current = null;
       }
     }
-  }, [loading, goals, selectedGoalId, view, provider, model, schedule, handleStreamEvent, maybeSummarizeConversation]);
+  }, [loading, dataMode, goals, contextGoalId, view, provider, model, schedule, handleStreamEvent, maybeSummarizeConversation]);
 
   /**
    * 应用选中的变更草案（卡片原位进入只读终态）。
@@ -1007,10 +1034,10 @@ export function AgentPanel({
   // 切目标：Run 中先 cancel；syncContextScope 仅 goalId 变化时清空
   useEffect(() => {
     if (!open || !historyLoaded) return;
-    const goalTitle = selectedGoalId ? goals.find((goal) => goal.id === selectedGoalId)?.title : null;
+    const goalTitle = contextGoalId ? goals.find((goal) => goal.id === contextGoalId)?.title : null;
     const prevGoalId = prevGoalIdRef.current;
-    const goalChanged = prevGoalId !== undefined && prevGoalId !== selectedGoalId;
-    prevGoalIdRef.current = selectedGoalId;
+    const goalChanged = prevGoalId !== undefined && prevGoalId !== contextGoalId;
+    prevGoalIdRef.current = contextGoalId;
 
     void (async () => {
       if (goalChanged) {
@@ -1022,10 +1049,10 @@ export function AgentPanel({
           await cancelServerRun(runId);
         }
       }
-      syncContextScope({ view, goalId: selectedGoalId }, goalTitle);
+      syncContextScope({ view, goalId: contextGoalId }, goalTitle);
       refreshFromStore();
     })();
-  }, [open, historyLoaded, selectedGoalId, view, goals, abortStream, cancelServerRun, refreshFromStore]);
+  }, [open, historyLoaded, contextGoalId, view, goals, abortStream, cancelServerRun, refreshFromStore]);
 
   // 自动滚到底部
   useEffect(() => {
@@ -1054,7 +1081,7 @@ export function AgentPanel({
   }, [open, historyLoaded]);
 
   const welcomeOnly = messages.length === 1 && messages[0]?.kind === "welcome";
-  const contextPrompts = buildContextPrompts(view, selectedGoalId, goals);
+  const contextPrompts = buildContextPrompts(view, contextGoalId, goals);
   const showChangeSetSticky = changeSet && changeSetTerminal === "pending" && !changeSetVisible;
   const streamingMessage = messages.find((message) => message.streaming);
   const streamingSteps = streamingMessage?.processSteps ?? [];
@@ -1091,7 +1118,7 @@ export function AgentPanel({
           <>
             <div className="change-set-header">
               <div>
-                <span className="change-set-eyebrow">待你确认的方案</span>
+                <span className="change-set-eyebrow">{changeSet.revision && changeSet.revision > 1 ? `待你确认的第 ${changeSet.revision} 版 · 已替代上一版` : "待你确认的方案"}</span>
                 <strong>{changeSet.title}</strong>
                 <p>{changeSet.reason}</p>
               </div>
@@ -1099,6 +1126,27 @@ export function AgentPanel({
             </div>
             <div className="change-set-toolbar">
               <span>{selectedOps.size} 项已选择</span>
+              {changeSet.revision && changeSet.revision > 1 && (
+                <button
+                  type="button"
+                  className="select-all"
+                  onClick={() => void (async () => {
+                    if (revisionHistoryOpen) {
+                      setRevisionHistoryOpen(false);
+                      return;
+                    }
+                    try {
+                      setRevisionHistoryError(null);
+                      if (!revisionHistory) setRevisionHistory(await changeSetApi.revisions(changeSet.id));
+                      setRevisionHistoryOpen(true);
+                    } catch (caught) {
+                      setRevisionHistoryError(caught instanceof Error ? caught.message : "暂时无法读取版本记录。");
+                    }
+                  })()}
+                >
+                  {revisionHistoryOpen ? "收起版本记录" : "查看上一版本变化"}
+                </button>
+              )}
               <button
                 type="button"
                 className="select-all"
@@ -1107,10 +1155,26 @@ export function AgentPanel({
                 {selectedOps.size === changeSet.operations.length ? "取消全选" : "选择全部"}
               </button>
             </div>
+            {revisionHistoryError && <p className="change-set-revision-error">{revisionHistoryError}</p>}
+            {revisionHistoryOpen && revisionHistory && (
+              <div className="change-set-revision-history">
+                {revisionHistory.slice(1).map((revision) => (
+                  <details key={revision.id}>
+                    <summary>第 {revision.revision} 版 · {revision.status === "SUPERSEDED" ? "已被替代" : revision.status}</summary>
+                    <p>{revision.reason}</p>
+                    <div className="planning-tree">
+                      {revision.operations.map((operation, index) => (
+                        <ChangeOperationPreview key={String(operation.operationId ?? index)} operation={operation} index={index} selected={false} onToggle={() => {}} goals={goals} schedule={schedule} readOnly />
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
             <div className="planning-tree">
               {changeSet.operations.map((operation, index) => (
                 <ChangeOperationPreview
-                  key={index}
+                  key={String(operation.operationId ?? index)}
                   operation={operation}
                   index={index}
                   selected={selectedOps.has(index)}
@@ -1181,7 +1245,7 @@ export function AgentPanel({
 
       <div className="agent-context">
         <span><CalendarDays size={13} />{VIEW_LABELS[view]}</span>
-        <span><Target size={13} />{selectedGoalId ? goals.find((goal) => goal.id === selectedGoalId)?.title ?? "已选目标" : `${goals.length} 个目标`}</span>
+        <span><Target size={13} />{contextGoalId ? goals.find((goal) => goal.id === contextGoalId)?.title ?? "当前目标" : "未关联目标"}</span>
       </div>
 
       {cleanupWarning && (
@@ -1295,17 +1359,20 @@ export function AgentPanel({
           ref={inputRef}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="告诉小律你想调整什么…"
+          placeholder={dataMode === "local" ? "本地模式下请使用手动日程功能…" : "告诉小律你想调整什么…"}
+          disabled={dataMode !== "database"}
         />
         {loading ? (
           <button type="button" aria-label="停止" onClick={() => void handleStop()}><Square size={15} /></button>
         ) : (
-          <button type="submit" aria-label="发送" disabled={!draft.trim()}><Send size={17} /></button>
+          <button type="submit" aria-label="发送" disabled={!draft.trim() || dataMode !== "database"}><Send size={17} /></button>
         )}
       </form>
 
       <p className="agent-boundary">
-        {changeSet && changeSetTerminal === "pending"
+        {dataMode === "local"
+          ? "本地模式保留手动日程能力；服务端提案续接暂不可用。"
+          : changeSet && changeSetTerminal === "pending"
           ? "继续讨论不会应用草案；正式写入仍须你确认。"
           : "涉及计划变更时，会先给你确认。"}
       </p>
