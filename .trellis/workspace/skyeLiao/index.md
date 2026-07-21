@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
-- **Last Active**: 2026-07-16
+- **Total Sessions**: 7
+- **Last Active**: 2026-07-21
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~212 | Active |
+| `journal-1.md` | ~250 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-07-21 | V0.4.0 目标执行与 Agent 优化收尾 | `734ccde` | `main` |
 | 6 | 2026-07-16 | 发布 v0.3.1 | `f7c24a9` | `main` |
 | 5 | 2026-07-16 | 修复周视图布局与日期高亮 | `380eee2` | `main` |
 | 4 | 2026-07-16 | v0.3.0 版本封板 | `acce0b7` | `main` |
